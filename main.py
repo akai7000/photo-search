@@ -4,6 +4,8 @@ import sqlite3
 import subprocess
 import sys
 import asyncio
+import logging
+from datetime import datetime, timezone
 
 from core import startup
 
@@ -30,7 +32,7 @@ from PIL import Image
 from pathlib import Path
 startup.report("Initializing database...")
 from core.database import add_folder as add_folder_db, get_folder_progress, get_folders, init_db, get_photo_count, delete_all_photos, remove_folder_db, save_setting, load_setting, get_connection, get_clusters, get_people_names, suggest_group_names, assign_name_to_cluster, assign_selected_faces, delete_face_group, delete_selected_faces, rename_person, find_photos_by_person_name, search_people_query
-from core.database import format_folder_status, get_face_photo_details
+from core.database import format_folder_status, get_face_photo_details, get_search_photo_details
 init_db()
 startup.report("Database initialized.")
 startup.report("Loading image search model...")
@@ -143,6 +145,7 @@ def refresh_folders():
                 with ui.element("div").classes("folder-table"):
                     ui.label("Folder").classes("text-caption text-gray-400")
                     ui.label("Indexed files").classes("text-caption text-gray-400 text-right")
+                    ui.label("Indexed on").classes("text-caption text-gray-400")
                     ui.label("Status").classes("text-caption text-gray-400")
                     ui.element("div")
                     for folder, progress in folder_progress:
@@ -150,6 +153,15 @@ def refresh_folders():
                         ui.label(folder).classes("min-w-0 break-all")
                         count = f"{progress['indexed']:,}" if progress["state"] != "not" else "-"
                         ui.label(count).classes("text-right")
+                        indexed_at = progress["indexed_at"]
+                        if indexed_at:
+                            indexed_at = datetime.fromisoformat(indexed_at)
+                            if indexed_at.tzinfo is None:
+                                indexed_at = indexed_at.replace(tzinfo=timezone.utc)
+                            indexed_at = indexed_at.astimezone()
+                            ui.label(indexed_at.strftime("%Y-%m-%d"))
+                        else:
+                            ui.label("-")
                         with ui.element("div"):
                             ui.badge(status, color=STATUS_COLORS[progress["state"]]).props("outline")
                         ui.button(icon="delete", on_click=lambda f=folder: remove_folder(f)).props(
@@ -352,6 +364,11 @@ def prepare_name_people():
     face_page_size, initial_open_groups = load_face_settings()
     people_names = get_people_names()
     suggestions = suggest_group_names()
+    clusters.sort(key=lambda cluster: (
+        cluster["person_id"] is not None,
+        cluster["cluster_id"] not in suggestions if cluster["person_id"] is None else False,
+        -cluster["face_count"] if cluster["person_id"] is None else 0,
+    ))
     initial_pages = {}
     for index, cluster in enumerate(clusters):
         if cluster["person_id"] is None and index < initial_open_groups:
@@ -1056,10 +1073,10 @@ def main_page():
         }
         .folder-table {
             display: grid;
-            grid-template-columns: minmax(180px, 1fr) 100px 190px 32px;
+            grid-template-columns: minmax(180px, 1fr) 100px 110px 190px 32px;
             align-items: center;
             gap: 8px 16px;
-            min-width: 550px;
+            min-width: 676px;
         }
         .settings-select .q-field__label {
             font-size: 20px;
@@ -1107,54 +1124,84 @@ def main_page():
         # Search section
         ui.label("Search").classes("text-h6")
 
-        def do_search():
-            query = search_input.value.strip()
-            if not query:
-                ui.notify("Enter a search term")
-                return
+        search_running = False
 
-            ui.notify("Searching...")
+        def find_search_results(query):
             people_query = search_people_query(query)
             if people_query is None:
                 results = search_photos(query, top_k=30, min_score=0.22)
             elif people_query["remaining_text"]:
-                # Rank the matching people's photos by how well they fit the rest of the query.
                 scores = dict(search_photos(people_query["remaining_text"], top_k=1_000_000, min_score=-1.0))
                 matched = [(pid, scores.get(pid)) for pid in people_query["photo_ids"]]
                 results = sorted(matched, key=lambda item: (item[1] is None, -(item[1] or 0)))
             else:
                 results = [(photo_id, None) for photo_id in people_query["photo_ids"]]
-            results_container.clear()
+            return results, get_search_photo_details([photo_id for photo_id, _ in results])
 
+        async def do_search():
+            nonlocal search_running
+            query = search_input.value.strip()
+            if not query:
+                ui.notify("Enter a search term")
+                return
+
+            if search_running:
+                ui.notify("A search is already in progress")
+                return
+            search_running = True
+            results_container.clear()
+            with results_container:
+                with ui.row().classes("items-center"):
+                    ui.spinner(size="md", color="primary")
+                    ui.label("Searching...")
+            try:
+                results, details = await run.io_bound(find_search_results, query)
+            except Exception as exc:
+                logging.exception("Search failed")
+                results_container.clear()
+                with results_container:
+                    ui.label("Search failed. Please try again.").classes("text-negative")
+                ui.notify(f"Search failed: {exc}", type="negative")
+                return
+            finally:
+                search_running = False
+            results_container.clear()
             with results_container:
                 if not results:
                     ui.label("No results found.")
                     return
-
                 ui.label(f"Found {len(results)} results").classes("text-subtitle2")
-                
-                with ui.grid(columns=5).classes("w-full gap-2"):
-                    for photo_id, score in results:
-                        conn = get_connection()
-                        cursor = conn.cursor()
-                        cursor.execute(
-                            "SELECT path, thumbnail_path, date_taken FROM photos WHERE id = ?",
-                            (photo_id,)
-                        )
-                        photo = cursor.fetchone()
-                        conn.close()
+                page_size = 30
+                page_count = (len(results) + page_size - 1) // page_size
+                if page_count > 1:
+                    ui.pagination(1, page_count, value=1, direction_links=True,
+                                  on_change=lambda e: render_results_page(e.value)).props("boundary-links max-pages=5")
+                page_container = ui.grid(columns=5).classes("w-full gap-2")
 
-                        if photo and photo["thumbnail_path"]:
+                def render_results_page(page):
+                    if page is None:
+                        return
+                    page_container.clear()
+                    with page_container:
+                        for photo_id, _ in results[(page - 1) * page_size:page * page_size]:
+                            photo = details.get(photo_id)
                             with ui.card().classes("p-1"):
-                                with ui.button(
-                                    on_click=lambda path=photo["path"]: open_photo_preview(path)
-                                ).props('flat no-caps aria-label="Open photo preview"').classes("w-full p-0"):
-                                    ui.image(photo["thumbnail_path"]).classes("w-full rounded")
-                                ui.label(Path(photo["path"]).name).classes(
-                                    "text-caption text-center break-all"
-                                )
-                                if photo["date_taken"]:
-                                    ui.label(photo["date_taken"][:10]).classes("text-caption text-center")
+                                if photo:
+                                    path, thumbnail_path, date_taken = photo
+                                    if thumbnail_path:
+                                        with ui.button(
+                                            on_click=lambda path=path: open_photo_preview(path)
+                                        ).props('flat no-caps aria-label="Open photo preview"').classes("w-full p-0"):
+                                            ui.image(thumbnail_path).classes("w-full rounded")
+                                    else:
+                                        ui.label("Thumbnail unavailable").classes("text-caption text-negative")
+                                    ui.label(Path(path).name).classes("text-caption text-center break-all")
+                                    if date_taken:
+                                        ui.label(date_taken[:10]).classes("text-caption text-center")
+                                else:
+                                    ui.label(f"Photo {photo_id} unavailable").classes("text-caption text-negative")
+
+                render_results_page(1)
 
         # Search input + button (appears first)
         with ui.row().classes("w-full items-center gap-2"):
@@ -1176,7 +1223,7 @@ startup.report("Opening Photo Search...")
 app.native.on("shown", window_ready.window_shown)
 app.native.on("loaded", window_ready.window_loaded)
 ui.run(
-    title="Photo Search v0.1",
+    title="Photo Search v0.2",
     native=True,
     window_size=(1300, 900),
     fullscreen=False,

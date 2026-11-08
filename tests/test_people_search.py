@@ -219,7 +219,7 @@ class PeopleSearchTests(unittest.TestCase):
         ui.button.reset_mock()
         namespace["main_page"]()
         search = next(call.kwargs["on_click"] for call in ui.button.call_args_list if call.args and call.args[0] == "Search")
-        search()
+        asyncio.run(search())
         clip.search_photos.assert_not_called()
         self.assertTrue(any("Found 1 results" in str(call) for call in ui.label.call_args_list))
         ui.image.assert_called_with("thumb.jpg")
@@ -229,8 +229,63 @@ class PeopleSearchTests(unittest.TestCase):
         preview()
         globals_["open_photo_preview"].assert_called_once_with("first.jpg")
         ui.input.return_value.value = "beach sunset"
-        search()
+        asyncio.run(search())
         clip.search_photos.assert_called_once_with("beach sunset", top_k=30, min_score=0.22)
+        self.assertTrue(any("No results found." in str(call) for call in ui.label.call_args_list))
+
+        conn = database.get_connection()
+        try:
+            conn.executemany(
+                "INSERT INTO photos (path, thumbnail_path) VALUES (?, ?)",
+                [(f"photo{i}.jpg", f"thumb{i}.jpg") for i in range(505)],
+            )
+            ids = [row[0] for row in conn.execute(
+                "SELECT id FROM photos WHERE path LIKE 'photo%.jpg' ORDER BY id"
+            )]
+            conn.commit()
+        finally:
+            conn.close()
+        globals_["search_people_query"] = MagicMock(return_value={
+            "photo_ids": ids, "remaining_text": "party",
+        })
+        clip.search_photos.reset_mock()
+        clip.search_photos.return_value = [(photo_id, float(photo_id)) for photo_id in ids[:-1]]
+        ui.image.reset_mock()
+        ui.input.return_value.value = "party with Alex"
+        asyncio.run(search())
+        clip.search_photos.assert_called_once_with("party", top_k=1_000_000, min_score=-1.0)
+        self.assertTrue(any("Found 505 results" in str(call) for call in ui.label.call_args_list))
+        self.assertEqual(ui.image.call_count, 30)
+        self.assertEqual(ui.image.call_args_list[0].args[0], "thumb503.jpg")
+        pagination = ui.pagination.call_args
+        self.assertEqual(pagination.args, (1, 17))
+        ui.image.reset_mock()
+        pagination.kwargs["on_change"](SimpleNamespace(value=17))
+        self.assertEqual(ui.image.call_count, 25)
+        self.assertEqual(ui.image.call_args_list[-1].args[0], "thumb504.jpg")
+
+        async def test_repeated_search():
+            started = asyncio.Event()
+            release = asyncio.Event()
+            async def waiting_io(func, *args):
+                started.set()
+                await release.wait()
+                return func(*args)
+            nicegui.run.io_bound = waiting_io
+            first = asyncio.create_task(search())
+            await started.wait()
+            await search()
+            ui.notify.assert_any_call("A search is already in progress")
+            release.set()
+            await first
+        asyncio.run(test_repeated_search())
+
+        async def fail_io(*args):
+            raise RuntimeError("model failed")
+        nicegui.run.io_bound = fail_io
+        with self.assertLogs(level="ERROR"):
+            asyncio.run(search())
+        ui.notify.assert_any_call("Search failed: model failed", type="negative")
 
 
 if __name__ == "__main__":

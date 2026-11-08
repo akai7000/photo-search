@@ -140,6 +140,53 @@ class ThumbnailTests(unittest.TestCase):
         self.assertEqual(result["added"] + result["skipped"] + result["errors"], 0)
         self.assertEqual(database.get_folder_status(str(self.photos)), "Not indexed")
 
+    def test_folder_index_date_changes_only_for_folders_with_changes(self):
+        other = self.root / "other"
+        empty = self.root / "empty"
+        other.mkdir()
+        empty.mkdir()
+        folders = [str(self.photos), str(other), str(empty)]
+        for folder in folders:
+            database.add_folder(folder)
+        self.make_photo(self.photos / "first.png")
+        self.make_photo(other / "second.png")
+        self.scanner.scan_folders(folders)
+        self.assertIsNotNone(database.get_folder_progress(folders[0])["indexed_at"])
+        self.assertIsNone(database.get_folder_progress(folders[2])["indexed_at"])
+        self.assertEqual(database.get_folder_status(folders[2]), "Indexed")
+        with closing(database.get_connection()) as conn:
+            conn.execute("UPDATE folders SET indexed_at = '2000-01-01T00:00:00' WHERE path IN (?, ?)", folders[:2])
+            conn.commit()
+        (self.thumb_dir / self.scanner.thumbnail_path_for(self.photos / "first.png", self.thumb_dir).name).unlink()
+        self.make_photo(other / "new.png")
+        result = self.scanner.scan_folders(folders)
+        self.assertEqual((result["added"], result["skipped"]), (1, 2))
+        self.assertEqual(database.get_folder_progress(folders[0])["indexed_at"], "2000-01-01T00:00:00")
+        self.assertNotEqual(database.get_folder_progress(folders[1])["indexed_at"], "2000-01-01T00:00:00")
+        self.assertIsNone(database.get_folder_progress(folders[2])["indexed_at"])
+
+    def test_cancel_records_changes_without_marking_folder_complete(self):
+        import threading
+        database.add_folder(str(self.photos))
+        self.make_photo(self.photos / "a.png")
+        self.make_photo(self.photos / "b.png")
+        cancel = threading.Event()
+        def on_progress(done, total, path, root):
+            if done == 1:
+                cancel.set()
+        result = self.scanner.scan_folders([str(self.photos)], on_progress, cancel)
+        self.assertTrue(result["cancelled"])
+        self.assertIsNotNone(database.get_folder_progress(str(self.photos))["indexed_at"])
+        self.assertEqual(database.get_folder_status(str(self.photos)), "Partially indexed (1 of 2)")
+
+    def test_failed_scan_does_not_change_timestamp(self):
+        database.add_folder(str(self.photos))
+        self.make_photo(self.photos / "bad.png")
+        with patch.object(self.scanner, "get_image_embedding", side_effect=RuntimeError("model error")):
+            result = self.scanner.scan_folders([str(self.photos)])
+        self.assertEqual(result["errors"], 1)
+        self.assertIsNone(database.get_folder_progress(str(self.photos))["indexed_at"])
+
     def test_failed_refresh_leaves_old_thumbnail_and_retries(self):
         source = self.photos / "photo.png"
         self.make_photo(source, 6)

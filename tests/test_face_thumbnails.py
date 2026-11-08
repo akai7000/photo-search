@@ -189,6 +189,66 @@ class FaceThumbnailTests(unittest.TestCase):
             self.assertTrue(self.ui.checkbox.call_args_list[0].kwargs["value"])
             self.assertEqual(self.ui.input.call_args_list[-20].kwargs["value"], "Draft")
 
+    def test_suggested_unnamed_groups_first_then_by_size_across_pages_and_refresh(self):
+        source = self.root / "photo.jpg"
+        Image.new("RGB", (50, 50), "red").save(source)
+        for cluster in range(23):
+            for _ in range(3 if cluster == 0 else 2 if cluster in (1, 21) else 1):
+                self.insert_face(source, cluster=cluster)
+        self.insert_face(source, cluster=23)
+        database.assign_name_to_cluster(23, "Alice")
+        state = self.open_name_people.__globals__
+        state["suggest_group_names"] = MagicMock(return_value={1: ("Alice", 0.9), 22: ("Alice", 0.8)})
+        with patch("core.face_thumbnails.FACE_THUMBNAIL_DIR", self.root / "faces"):
+            self.open_name_people()
+            headers = [call.args[0] for call in self.ui.label.call_args_list
+                       if call.args and isinstance(call.args[0], str) and
+                       (call.args[0].startswith("Group ") or call.args[0].startswith("Alice ("))]
+            self.assertEqual(headers[:4], ["Group 2 (2 faces)", "Group 23 (1 faces)",
+                                           "Group 1 (3 faces)", "Group 22 (2 faces)"])
+            self.assertTrue(any("Looks like Alice" in str(call) for call in self.ui.label.call_args_list))
+            self.ui.label.reset_mock()
+            self.ui.pagination.call_args.kwargs["on_change"](SimpleNamespace(value=2))
+            headers = [call.args[0] for call in self.ui.label.call_args_list
+                       if call.args and isinstance(call.args[0], str) and
+                       (call.args[0].startswith("Group ") or call.args[0].startswith("Alice ("))]
+            self.assertEqual(len(headers), 4)
+            self.assertEqual(headers[-1], "Alice (1 faces)")
+
+            self.ui.pagination.call_args.kwargs["on_change"](SimpleNamespace(value=1))
+            state["suggest_group_names"].return_value = {0: ("Alice", 0.95)}
+            self.ui.label.reset_mock()
+            self.ui.input.return_value.value = "Bob"
+            save = next(call.kwargs["on_click"] for call in self.ui.button.call_args_list
+                        if call.args and call.args[0] == "Name whole group")
+            save()
+            headers = [call.args[0] for call in self.ui.label.call_args_list
+                       if call.args and isinstance(call.args[0], str) and call.args[0].startswith("Group ")]
+            self.assertEqual(headers[0], "Group 1 (3 faces)")
+
+    def test_prepare_sorts_before_prefetching_and_keeps_stable_ties(self):
+        state = self.open_name_people.__globals__
+        clusters = [
+            {"cluster_id": 4, "person_id": None, "face_count": 1, "face_ids": "4"},
+            {"cluster_id": 3, "person_id": None, "face_count": 2, "face_ids": "3"},
+            {"cluster_id": 2, "person_id": None, "face_count": 2, "face_ids": "2"},
+            {"cluster_id": 1, "person_id": None, "face_count": 1, "face_ids": "1"},
+            {"cluster_id": None, "person_id": 1, "face_count": 99, "face_ids": "5"},
+        ]
+        with patch.dict(state, {
+            "get_clusters": MagicMock(return_value=clusters),
+            "load_setting": MagicMock(return_value=False),
+            "load_face_settings": MagicMock(return_value=(24, 2)),
+            "get_people_names": MagicMock(return_value=["Alice"]),
+            "suggest_group_names": MagicMock(return_value={1: ("Alice", 0.8), 3: ("Alice", 0.9)}),
+            "ensure_face_thumbnails": MagicMock(return_value=({}, {})),
+            "get_face_photo_details": MagicMock(return_value={}),
+        }):
+            result = state["prepare_name_people"]()
+            self.assertEqual([c["cluster_id"] for c in result[0]], [3, 1, 2, 4, None])
+            self.assertEqual(list(result[-1]), [3, 1])
+            self.assertEqual(state["ensure_face_thumbnails"].call_count, 2)
+
     def test_naming_refreshes_in_place_preserving_other_group_draft_and_selection(self):
         source = self.root / "photo.jpg"
         Image.new("RGB", (50, 50), "red").save(source)
@@ -279,7 +339,7 @@ class FaceThumbnailTests(unittest.TestCase):
                         if call.args and call.args[0] == "Name whole group")
             save()
             self.assertEqual([call.kwargs["value"] for call in self.ui.expansion.call_args_list],
-                             [True, True, True, False, False])
+                             [True, True, False, True, False])
 
     def test_naming_respects_nondefault_open_group_settings(self):
         source = self.root / "photo.jpg"
@@ -415,7 +475,7 @@ class FaceThumbnailTests(unittest.TestCase):
                            if call.args and call.args[0] == "Delete faces")
             confirm()
             self.assertEqual([call.kwargs["value"] for call in self.ui.expansion.call_args_list],
-                             [True, True, True, False, False])
+                             [True, True, False, False, True])
 
     def test_refresh_failure_keeps_dialog_open_and_can_retry(self):
         source = self.root / "photo.jpg"
