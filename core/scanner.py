@@ -48,6 +48,7 @@ def scan_folders(folders: List[str], progress_callback=None, cancel_event=None) 
         work.extend((folder_str, p) for p in folder_files)
 
     processed_in_folder: dict[str, int] = {f: 0 for f in folder_totals}
+    changed_folders: set[str] = set()
     current_root = ""
 
     def report(path):
@@ -121,6 +122,7 @@ def scan_folders(folders: List[str], progress_callback=None, cancel_event=None) 
 
             # Insert or update photo and get its ID
             photo_id = insert_or_update_photo(data)
+            changed_folders.add(current_root)
 
             # Face detection
             faces = detect_faces(path)
@@ -145,9 +147,9 @@ def scan_folders(folders: List[str], progress_callback=None, cancel_event=None) 
         report(path)
 
     # A cancelled scan leaves folders unmarked; their status comes from the photos indexed so far.
-    if not cancelled:
-        for folder in folders:
-            mark_folder_indexed(folder)
+    for folder in folder_totals:
+        if not cancelled or folder in changed_folders:
+            mark_folder_indexed(folder, update_timestamp=folder in changed_folders, mark_complete=not cancelled)
 
     return {
         "added": added,

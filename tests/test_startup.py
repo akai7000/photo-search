@@ -1,9 +1,11 @@
 import json
 import itertools
+import io
 import unittest
 from unittest.mock import MagicMock, patch
 
 from core import startup
+from core import startup_splash
 
 
 class StartupTests(unittest.TestCase):
@@ -57,6 +59,25 @@ class StartupTests(unittest.TestCase):
                 for event in order:
                     getattr(gate, event)()
                 close.assert_called_once()
+
+    def test_splash_has_no_title_bar_and_error_can_be_dismissed(self):
+        root = MagicMock()
+        frame = MagicMock()
+        close_button = MagicMock()
+        with patch.object(startup_splash.tk, "Tk", return_value=root), \
+             patch.object(startup_splash.tk, "Frame", return_value=frame), \
+             patch.object(startup_splash.tk, "Label"), \
+             patch.object(startup_splash.tk, "Button", return_value=close_button) as button, \
+             patch.object(startup_splash.ttk, "Progressbar"), \
+             patch.object(startup_splash.sys, "stdin", io.StringIO('{"kind":"error","text":"failed"}\n')), \
+             patch.object(startup_splash.threading, "Thread") as thread:
+            thread.side_effect = lambda target, daemon: MagicMock(start=target)
+            startup_splash.main()
+            root.overrideredirect.assert_called_once_with(True)
+            button.assert_called_once_with(frame, text="Close", command=root.destroy)
+            update = root.after.call_args.args[1]
+            update()
+            close_button.pack.assert_called_once()
 
 
 if __name__ == "__main__":

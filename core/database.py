@@ -669,13 +669,14 @@ def get_folders() -> list[str]:
     conn.close()
     return [row["path"] for row in rows]
 
-def mark_folder_indexed(path: str):
-    """Mark a folder as indexed."""
+def mark_folder_indexed(path: str, *, update_timestamp: bool = True, mark_complete: bool = True):
+    """Record a completed scan and optionally the time of its latest changes."""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "UPDATE folders SET indexed = 1, indexed_at = ? WHERE path = ?",
-        (datetime.utcnow().isoformat(), path)
+        "UPDATE folders SET indexed = CASE WHEN ? THEN 1 ELSE indexed END, "
+        "indexed_at = CASE WHEN ? THEN ? ELSE indexed_at END WHERE path = ?",
+        (mark_complete, update_timestamp, datetime.utcnow().isoformat(), path)
     )
     conn.commit()
     conn.close()
@@ -691,12 +692,12 @@ def set_folder_total(path: str, total: int):
 
 
 def get_folder_progress(path: str) -> dict:
-    """Return {'state', 'indexed', 'total'}; state is 'not', 'partial' or 'complete'."""
+    """Return indexing state, file counts and the last change timestamp."""
     prefix = str(Path(path)).rstrip("\\/") + os.sep
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT indexed, total_files FROM folders WHERE path = ?", (path,)
+            "SELECT indexed, total_files, indexed_at FROM folders WHERE path = ?", (path,)
         ).fetchone()
         indexed = conn.execute(
             "SELECT COUNT(*) FROM photos WHERE substr(path, 1, ?) = ?", (len(prefix), prefix)
@@ -711,7 +712,26 @@ def get_folder_progress(path: str) -> dict:
         state = "complete" if row and row["indexed"] else "partial"
     else:
         state = "complete" if indexed >= total else "partial"
-    return {"state": state, "indexed": indexed, "total": total if total is not None else indexed}
+    return {"state": state, "indexed": indexed, "total": total if total is not None else indexed,
+            "indexed_at": row["indexed_at"] if row else None}
+
+
+def get_search_photo_details(photo_ids: list[int]) -> dict[int, tuple[str, str | None, str | None]]:
+    """Fetch result metadata in batches without opening a connection per result."""
+    conn = get_connection()
+    try:
+        details = {}
+        for offset in range(0, len(photo_ids), 500):
+            batch = photo_ids[offset:offset + 500]
+            placeholders = ",".join("?" for _ in batch)
+            rows = conn.execute(
+                f"SELECT id, path, thumbnail_path, date_taken FROM photos WHERE id IN ({placeholders})",
+                batch,
+            )
+            details.update((row["id"], (row["path"], row["thumbnail_path"], row["date_taken"])) for row in rows)
+        return details
+    finally:
+        conn.close()
 
 
 def format_folder_status(progress: dict) -> str:

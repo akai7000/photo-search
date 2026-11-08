@@ -10,7 +10,7 @@ from tkinter import ttk
 
 def main():
     root = tk.Tk()
-    root.title("Photo Search")
+    root.overrideredirect(True)
     root.resizable(False, False)
     root.configure(bg="#1c1c1c")
     width, height = 560, 300
@@ -31,6 +31,7 @@ def main():
     status = tk.Label(frame, text="Preparing application...", fg="#e2e8f0", bg="#1c1c1c",
                       font=("Segoe UI", 10), anchor="nw", justify="left", wraplength=500)
     status.pack(fill="both", expand=True, pady=(18, 0))
+    dismiss = tk.Button(frame, text="Close", command=root.destroy)
     messages = queue.Queue()
 
     def read_messages():
@@ -63,6 +64,7 @@ def main():
                 progress.stop()
                 text = message.get("text") or "The application stopped before startup completed."
                 status.config(text=f"Could not start Photo Search.\n{text}\n\nClose this window to dismiss.", fg="#ff9999")
+                dismiss.pack(anchor="e", pady=(8, 0))
             elif kind == "status" and not failed:
                 text = message["text"]
                 if text == "Database initialized." or text.startswith(("Using GPU:", "Using CPU")):

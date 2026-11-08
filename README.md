@@ -8,7 +8,7 @@ Photo Search is a Windows desktop application for indexing and searching a perso
 - Search using a visual description, saved people's names, or a combination of both.
 - Group detected faces, name whole groups or selected faces, and merge matching names.
 - Review paginated face groups, preview the original photo and its folder, and delete face detections without deleting photos.
-- View search results as thumbnails and open a larger, orientation-corrected preview.
+- View paginated search results as thumbnails and open a larger, orientation-corrected preview.
 - Configure face page size, initially expanded groups, and group-delete confirmations.
 
 The application stores its SQLite index, settings, and generated thumbnails under `data/` in the project directory. Original photos remain in their selected folders. **Reset Index** in Settings deletes the local index, names, generated thumbnails, and settings; it does not delete the original photos.
@@ -41,6 +41,8 @@ For GPU acceleration, install a PyTorch build compatible with your CUDA setup if
 5. Use **Settings** to adjust face-group display and deletion behavior, or reset the index.
 
 Search and face grouping are based on machine-learning models, so matches and group suggestions should be reviewed before naming or deleting detections.
+Unnamed groups appear first, with suggested matches at the top; within each set, groups with more faces appear first.
+The **Indexed on** date is displayed in local time and changes only when a scan adds or updates a photo in that folder, including during a cancelled scan. Scans that skip all photos do not change the date.
 
 ## Tests
 
