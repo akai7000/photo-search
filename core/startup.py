@@ -38,9 +38,11 @@ class WindowReadyGate:
 
 def start_splash():
     global _process
+    command = ([sys.executable, "--photo-search-splash"] if getattr(sys, "frozen", False)
+               else [sys.executable, "-u", str(Path(__file__).with_name("startup_splash.py"))])
     try:
         _process = subprocess.Popen(
-            [sys.executable, "-u", str(Path(__file__).with_name("startup_splash.py"))],
+            command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,

@@ -5,6 +5,9 @@
 # Python environments and generated files.
 /venv/
 /.venv/
+/.venv-*/
+/build/
+/dist/
 __pycache__/
 *.py[cod]
 .pytest_cache/

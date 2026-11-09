@@ -2,12 +2,24 @@
 
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
-CONFIG_PATH = PROJECT_ROOT / ".photo-search-config.json"
+
+
+def storage_paths():
+    if getattr(sys, "frozen", False):
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if not local_app_data:
+            raise RuntimeError("LOCALAPPDATA is required for installed Photo Search")
+        root = Path(local_app_data) / "Photo Search"
+        return root / "data", root / "config.json"
+    return PROJECT_ROOT / "data", PROJECT_ROOT / ".photo-search-config.json"
+
+
+DEFAULT_DATA_DIR, CONFIG_PATH = storage_paths()
 
 
 def load_data_directory() -> Path:
@@ -28,6 +40,7 @@ def load_data_directory() -> Path:
 def save_data_directory(path: Path) -> None:
     temp_path = None
     try:
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", dir=CONFIG_PATH.parent, delete=False
         ) as file:
