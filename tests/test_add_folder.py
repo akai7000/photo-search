@@ -7,6 +7,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from core import database
+from core import data_location, face_thumbnails
 
 
 class AddFolderTests(unittest.IsolatedAsyncioTestCase):
@@ -18,6 +19,12 @@ class AddFolderTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(db_patch.stop)
 
         self.ui = MagicMock()
+        self.switches = {}
+        def make_switch(label, **kwargs):
+            control = MagicMock()
+            self.switches[label] = control
+            return control
+        self.ui.switch.side_effect = make_switch
         self.dialog = AsyncMock()
         nicegui = ModuleType("nicegui")
         nicegui.ui = self.ui
@@ -90,13 +97,92 @@ class AddFolderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.state["selected_folders"], [])
         self.state["refresh_folders"].assert_not_called()
 
+    async def test_remove_folder_requires_confirmation_and_preserves_originals(self):
+        folder = Path(self.temp_dir.name) / "photos"
+        folder.mkdir()
+        original = folder / "photo.jpg"
+        original.write_bytes(b"original")
+        database.add_folder(str(folder))
+        database.insert_or_update_photo({"path": str(original)})
+        self.state["selected_folders"].append(str(folder))
+        self.state["refresh_photo_count"] = MagicMock()
+        results = MagicMock()
+        self.state["search_results_container"] = results
+        self.state["remove_folder"](str(folder))
+        self.assertEqual(database.get_photo_count(), 1)
+        self.assertEqual(database.get_folders(), [str(folder)])
+        self.ui.label.assert_any_call(
+            "This removes the folder from the list and deletes its indexed photos, faces and generated "
+            "thumbnails, except photos also covered by another searchable folder. "
+            "Original photo files and saved people will not be deleted."
+        )
+        confirm = next(call.kwargs["on_click"] for call in self.ui.button.call_args_list
+                       if call.args and call.args[0] == "Remove folder")
+        confirm()
+        self.assertEqual(database.get_folders(), [])
+        self.assertEqual(database.get_photo_count(), 0)
+        self.assertTrue(original.exists())
+        self.assertEqual(self.state["selected_folders"], [])
+        results.clear.assert_called_once()
+        self.state["refresh_photo_count"].assert_called_once()
+
+    async def test_remove_folder_rechecks_busy_state_and_data_directory(self):
+        folder = str(Path(self.temp_dir.name) / "photos")
+        database.add_folder(folder)
+        self.state["selected_folders"].append(folder)
+        self.state["remove_folder"](folder)
+        confirm = next(call.kwargs["on_click"] for call in self.ui.button.call_args_list
+                       if call.args and call.args[0] == "Remove folder")
+        self.state["index_progress"]["active"] = True
+        confirm()
+        self.assertEqual(database.get_folders(), [folder])
+        self.state["index_progress"]["active"] = False
+        with patch.object(database, "DB_PATH", Path(self.temp_dir.name) / "other.db"):
+            confirm()
+        self.assertEqual(database.get_folders(), [folder])
+        self.ui.notify.assert_called_with(
+            "The data directory changed. Reopen the folder confirmation.", type="warning"
+        )
+
+    async def test_remove_folder_reports_database_error_without_changing_ui(self):
+        folder = str(Path(self.temp_dir.name) / "photos")
+        database.add_folder(folder)
+        self.state["selected_folders"].append(folder)
+        self.state["remove_folder"](folder)
+        confirm = next(call.kwargs["on_click"] for call in self.ui.button.call_args_list
+                       if call.args and call.args[0] == "Remove folder")
+        with patch.dict(self.state, {"remove_folder_and_index": MagicMock(side_effect=database.sqlite3.Error("disk error"))}):
+            confirm()
+        self.assertEqual(database.get_folders(), [folder])
+        self.assertEqual(self.state["selected_folders"], [folder])
+        self.ui.notify.assert_called_with("Could not remove folder: disk error", type="negative")
+
+    async def test_remove_folder_reports_thumbnail_cleanup_failure(self):
+        folder = str(Path(self.temp_dir.name) / "photos")
+        database.add_folder(folder)
+        self.state["selected_folders"].append(folder)
+        self.state["refresh_photo_count"] = MagicMock()
+        self.state["remove_folder"](folder)
+        confirm = next(call.kwargs["on_click"] for call in self.ui.button.call_args_list
+                       if call.args and call.args[0] == "Remove folder")
+        def partial_removal(path):
+            database.remove_folder_db(path)
+            return 0, ["thumbnail locked"]
+        with patch.dict(self.state, {"remove_folder_and_index": partial_removal}):
+            confirm()
+        self.assertEqual(self.state["selected_folders"], [])
+        self.ui.notify.assert_called_with(
+            "Folder removed, but 1 generated thumbnail(s) could not be removed. "
+            "See the application log for details.", type="warning"
+        )
+
     async def test_settings_dialog_saves_each_change_and_closes(self):
         self.state["open_settings"]()
         self.ui.label.return_value.classes.assert_any_call(
             "w-full bg-grey-8 text-grey-2 text-body2 text-bold px-3 py-2"
         )
-        self.ui.switch.assert_called_once_with("Skip Delete Group Confirmation", value=False)
-        toggle = self.ui.switch.return_value
+        self.ui.switch.assert_any_call("Skip Delete Group Confirmation", value=False)
+        toggle = self.switches["Skip Delete Group Confirmation"]
         change = toggle.on_value_change.call_args.args[0]
         change(SimpleNamespace(value=True))
         self.assertTrue(database.load_setting("skip_delete_group_confirmation"))
@@ -111,16 +197,54 @@ class AddFolderTests(unittest.IsolatedAsyncioTestCase):
                              for call in self.ui.button.call_args_list))
         self.ui.switch.reset_mock()
         self.state["open_settings"]()
-        self.ui.switch.assert_called_once_with("Skip Delete Group Confirmation", value=True)
+        self.ui.switch.assert_any_call("Skip Delete Group Confirmation", value=True)
 
     async def test_settings_save_failure_is_reported(self):
         self.state["open_settings"]()
-        change = self.ui.switch.return_value.on_value_change.call_args.args[0]
+        toggle = self.switches["Skip Delete Group Confirmation"]
+        change = toggle.on_value_change.call_args.args[0]
         with patch.dict(self.state, {"save_setting": MagicMock(side_effect=database.sqlite3.Error("disk error"))}):
             change(SimpleNamespace(value=True))
         self.ui.notify.assert_called_with("Could not save setting: disk error", type="negative")
-        self.ui.switch.return_value.set_value.assert_called_once_with(False)
+        toggle.set_value.assert_called_once_with(False)
         self.assertFalse(database.load_setting("skip_delete_group_confirmation", False))
+
+    async def test_skip_indexed_setting_defaults_to_true_and_persists(self):
+        self.state["open_settings"]()
+        self.ui.switch.assert_any_call("Skip Previously Indexed Folders", value=True)
+        toggle = self.switches["Skip Previously Indexed Folders"]
+        change = toggle.on_value_change.call_args.args[0]
+        change(SimpleNamespace(value=False))
+        self.assertFalse(database.load_setting("skip_indexed_folders", True))
+        self.state["open_settings"]()
+        self.ui.switch.assert_called_with("Skip Previously Indexed Folders", value=False)
+        toggle = self.switches["Skip Previously Indexed Folders"]
+        change = toggle.on_value_change.call_args.args[0]
+        with patch.dict(self.state, {"save_setting": MagicMock(side_effect=database.sqlite3.Error("disk error"))}):
+            change(SimpleNamespace(value=True))
+        toggle.set_value.assert_called_once_with(False)
+        self.ui.notify.assert_called_with("Could not save setting: disk error", type="negative")
+        self.assertFalse(database.load_setting("skip_indexed_folders"))
+
+    async def test_indexing_passes_setting_and_avoids_clustering_when_all_skipped(self):
+        self.state["selected_folders"][:] = ["photos"]
+        scan = self.state["scan_folders"]
+        scan.return_value = {"added": 0, "updated": 0, "skipped": 0, "errors": 0,
+                             "cancelled": False, "folders_skipped": 1}
+        async def io_bound(func, *args):
+            return func(*args)
+        self.state["run"].io_bound = io_bound
+        self.state["refresh_photo_count"] = MagicMock()
+        await self.state["index_folders"]()
+        self.assertTrue(scan.call_args.kwargs["skip_indexed_folders"])
+        self.state["cluster_faces"].assert_not_called()
+        self.assertIn("Folders skipped: 1", self.ui.notify.call_args.args[0])
+        database.save_setting("skip_indexed_folders", False)
+        scan.return_value["folders_skipped"] = 0
+        self.state["cluster_faces"].return_value = 2
+        await self.state["index_folders"]()
+        self.assertFalse(scan.call_args.kwargs["skip_indexed_folders"])
+        self.state["cluster_faces"].assert_called_once()
 
     async def test_settings_dialog_is_available_while_indexing(self):
         self.main_page()
@@ -130,6 +254,177 @@ class AddFolderTests(unittest.IsolatedAsyncioTestCase):
         settings()
         self.ui.navigate.to.assert_not_called()
         self.ui.dialog.return_value.__enter__.return_value.open.assert_called_once()
+
+    async def test_switch_data_directory_refreshes_and_persists_selection(self):
+        target = Path(self.temp_dir.name) / "other"
+        target.mkdir()
+        database.prepare_database(target)
+        conn = database.get_connection(target / "photo_search.db")
+        conn.execute("INSERT INTO folders (path) VALUES (?)", ("other photos",))
+        conn.commit()
+        conn.close()
+        self.dialog.return_value = [str(target)]
+        async def io_bound(func, *args):
+            return func(*args)
+        self.state["run"].io_bound = io_bound
+        refresh_count = MagicMock()
+        results = MagicMock()
+        self.state["refresh_photo_count"] = refresh_count
+        self.state["search_results_container"] = results
+        with patch.object(data_location, "CONFIG_PATH", Path(self.temp_dir.name) / "config.json"), \
+             patch.object(face_thumbnails, "FACE_THUMBNAIL_DIR"):
+            self.state["open_settings"]()
+            self.ui.input.assert_any_call(label="Data directory", value=str(database.DB_PATH.parent))
+            browse = next(call.kwargs["on_click"] for call in self.ui.button.call_args_list
+                          if call.args and call.args[0] == "Browse")
+            update = next(call.kwargs["on_click"] for call in self.ui.button.call_args_list
+                          if call.args and call.args[0] == "Update")
+            control = self.ui.input.return_value.classes.return_value
+            original = database.DB_PATH
+            await browse()
+            control.set_value.assert_called_once_with(str(target))
+            self.assertEqual(database.DB_PATH, original)
+            self.assertFalse(data_location.CONFIG_PATH.exists())
+            self.state["refresh_folders"].assert_not_called()
+            control.value = str(target)
+            await update()
+            self.assertEqual(database.DB_PATH, target / "photo_search.db")
+            self.assertEqual(data_location.load_data_directory(), target)
+            self.assertEqual(self.state["selected_folders"], ["other photos"])
+            self.assertEqual(self.state["scanner"].THUMBNAIL_DIR, target / "thumbnails")
+            self.assertEqual(face_thumbnails.FACE_THUMBNAIL_DIR, target / "face_thumbnails")
+            refresh_count.assert_called_once()
+            self.state["refresh_folders"].assert_called_once()
+            results.clear.assert_called_once()
+
+    async def test_typed_directory_changes_only_after_update(self):
+        target = Path(self.temp_dir.name) / "typed"
+        target.mkdir()
+        async def io_bound(func, *args):
+            return func(*args)
+        self.state["run"].io_bound = io_bound
+        self.state["open_settings"]()
+        control = self.ui.input.return_value
+        control.props.assert_not_called()
+        entry = control.classes.return_value
+        entry.value = str(target)
+        original = database.DB_PATH
+        update = next(call.kwargs["on_click"] for call in self.ui.button.call_args_list
+                      if call.args and call.args[0] == "Update")
+        with patch.object(data_location, "CONFIG_PATH", Path(self.temp_dir.name) / "config.json"), \
+             patch.object(face_thumbnails, "FACE_THUMBNAIL_DIR"):
+            self.assertEqual(database.DB_PATH, original)
+            await update()
+            self.dialog.assert_not_awaited()
+            self.assertEqual(database.DB_PATH, target / "photo_search.db")
+            self.assertEqual(data_location.load_data_directory(), target)
+            self.state["refresh_folders"].assert_called_once()
+
+    async def test_picker_failure_is_visible(self):
+        self.dialog.side_effect = RuntimeError("native picker unavailable")
+        with self.assertLogs(level="ERROR"):
+            await self.state["choose_data_directory"](MagicMock())
+        self.ui.notify.assert_called_with(
+            "Could not open folder picker: native picker unavailable",
+            type="negative",
+        )
+
+    async def test_switch_rejects_corruption_and_busy_operations(self):
+        target = Path(self.temp_dir.name) / "bad"
+        target.mkdir()
+        corrupt = target / "photo_search.db"
+        corrupt.write_bytes(b"bad database")
+        original = database.DB_PATH
+        self.dialog.return_value = [str(target)]
+        async def io_bound(func, *args):
+            return func(*args)
+        self.state["run"].io_bound = io_bound
+        settings = MagicMock()
+        with patch.object(data_location, "CONFIG_PATH", Path(self.temp_dir.name) / "config.json"):
+            await self.state["change_data_directory"](str(target), settings)
+            self.assertEqual(database.DB_PATH, original)
+            self.assertEqual(corrupt.read_bytes(), b"bad database")
+            self.assertFalse(data_location.CONFIG_PATH.exists())
+            settings.close.assert_not_called()
+            self.assertIn("Could not change data directory", self.ui.notify.call_args.args[0])
+            self.dialog.reset_mock()
+            for key, value in (("storage_jobs", 1), ("name_people_active", True)):
+                self.state[key] = value
+                await self.state["change_data_directory"](str(target), settings)
+                self.dialog.assert_not_awaited()
+                self.state[key] = 0 if key == "storage_jobs" else False
+
+    async def test_switch_creates_empty_index_and_cancel_does_nothing(self):
+        target = Path(self.temp_dir.name) / "empty"
+        target.mkdir()
+        async def io_bound(func, *args):
+            return func(*args)
+        self.state["run"].io_bound = io_bound
+        settings = MagicMock()
+        original = database.DB_PATH
+        with patch.object(data_location, "CONFIG_PATH", Path(self.temp_dir.name) / "config.json"), \
+             patch.object(face_thumbnails, "FACE_THUMBNAIL_DIR"):
+            self.dialog.return_value = None
+            field = MagicMock()
+            field.value = "draft"
+            await self.state["choose_data_directory"](field)
+            field.set_value.assert_not_called()
+            self.assertEqual(field.value, "draft")
+            self.assertEqual(database.DB_PATH, original)
+            self.assertFalse(data_location.CONFIG_PATH.exists())
+            self.dialog.return_value = [str(target)]
+            await self.state["change_data_directory"](str(target), settings)
+            self.assertTrue((target / "photo_search.db").is_file())
+            self.assertEqual(database.get_folders(), [])
+            self.assertFalse((target / "thumbnails").exists())
+            settings.close.assert_called_once()
+
+    async def test_switch_waits_for_preparation_and_blocks_new_operations(self):
+        target = Path(self.temp_dir.name) / "other"
+        target.mkdir()
+        self.dialog.return_value = [str(target)]
+        started = asyncio.Event()
+        release = asyncio.Event()
+        async def io_bound(func, *args):
+            started.set()
+            await release.wait()
+            return func(*args)
+        self.state["run"].io_bound = io_bound
+        with patch.object(data_location, "CONFIG_PATH", Path(self.temp_dir.name) / "config.json"), \
+             patch.object(face_thumbnails, "FACE_THUMBNAIL_DIR"):
+            switch = asyncio.create_task(self.state["change_data_directory"](str(target), MagicMock()))
+            await started.wait()
+            self.assertTrue(self.state["data_switching"])
+            await self.state["index_folders"]()
+            self.ui.notify.assert_called_with("Wait for the data directory change to finish.", type="warning")
+            release.set()
+            await switch
+            self.assertFalse(self.state["data_switching"])
+
+    async def test_failed_configuration_save_does_not_activate_new_database(self):
+        target = Path(self.temp_dir.name) / "other"
+        target.mkdir()
+        self.dialog.return_value = [str(target)]
+        original = database.DB_PATH
+        async def io_bound(func, *args):
+            return func(*args)
+        self.state["run"].io_bound = io_bound
+        settings = MagicMock()
+        with patch.dict(self.state, {"save_data_directory": MagicMock(side_effect=OSError("read only"))}):
+            await self.state["change_data_directory"](str(target), settings)
+        self.assertEqual(database.DB_PATH, original)
+        settings.close.assert_not_called()
+        self.assertIn("read only", self.ui.notify.call_args.args[0])
+
+    async def test_stale_reset_confirmation_cannot_reset_another_database(self):
+        original = database.DB_PATH
+        other = Path(self.temp_dir.name) / "other.db"
+        database.init_db(other)
+        with patch.object(database, "DB_PATH", other):
+            self.state["do_reset"](MagicMock(), MagicMock(), original)
+            self.ui.notify.assert_called_with(
+                "The data directory changed. Reopen Settings to reset its index.", type="warning"
+            )
 
     async def test_face_settings_persist_and_restore_when_reopened(self):
         controls = [MagicMock(), MagicMock()]
@@ -164,6 +459,12 @@ class AddFolderTests(unittest.IsolatedAsyncioTestCase):
         self.ui.label.assert_any_call(
             "Maximum number of unnamed groups opened automatically in Name People."
         )
+
+    async def test_settings_sections_do_not_shrink_inside_scroll_area(self):
+        self.state["open_settings"]()
+        classes = [call.args[0] for call in self.ui.column.return_value.classes.call_args_list if call.args]
+        self.assertIn("w-full min-h-0 gap-4 overflow-y-auto", classes)
+        self.assertEqual(classes.count("w-full shrink-0 gap-0 rounded overflow-hidden bg-grey-9"), 3)
 
     async def test_face_settings_reject_invalid_values_and_revert_on_save_failure(self):
         controls = [MagicMock(), MagicMock()]
@@ -292,6 +593,22 @@ class AddFolderTests(unittest.IsolatedAsyncioTestCase):
         header.set_text.assert_any_call("Searchable Folders (2)")
         summary.set_text.assert_called_with("1 indexed, 1 partially indexed, 0 not indexed")
 
+    async def test_indexed_date_displays_abbreviated_month_and_unpadded_day(self):
+        self.state["refresh_folders"] = self.refresh_folders
+        folder = str(Path(self.temp_dir.name) / "photos")
+        database.add_folder(folder)
+        self.state["selected_folders"].append(folder)
+        conn = database.get_connection()
+        try:
+            from datetime import datetime
+            timestamp = datetime(2026, 11, 8, 12).astimezone().isoformat()
+            conn.execute("UPDATE folders SET indexed_at = ? WHERE path = ?", (timestamp, folder))
+            conn.commit()
+        finally:
+            conn.close()
+        self.main_page()
+        self.ui.label.assert_any_call("Nov 8, 2026")
+
     async def test_main_header_has_no_photo_search_title(self):
         self.main_page()
         self.assertFalse(any(call.args and call.args[0] == "Photo Search"
@@ -362,12 +679,46 @@ class AddFolderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.ui.dialog.return_value.__enter__.return_value.open.assert_called_once()
 
+    async def test_photo_preview_explorer_link_selects_its_original_photo(self):
+        first = Path(self.temp_dir.name) / "first folder" / "one photo.jpg"
+        second = Path(self.temp_dir.name) / "second folder" / "two photo.jpg"
+        for path in (first, second):
+            path.parent.mkdir()
+            path.write_bytes(b"photo")
+        self.state["run"].io_bound = AsyncMock(return_value="data:image/jpeg;base64,preview")
+        await self.state["open_photo_preview"](str(first))
+        await self.state["open_photo_preview"](str(second))
+        links = [call for call in self.ui.button.call_args_list
+                 if call.args and call.args[0] in (str(first.parent), str(second.parent))]
+        self.assertEqual(len(links), 2)
+        self.assertEqual([link.args[0] for link in links], [str(first.parent), str(second.parent)])
+        self.ui.row.return_value.classes.assert_any_call("w-full items-center no-wrap")
+        self.ui.row.return_value.classes.assert_any_call("min-w-0 flex-1 justify-center no-wrap")
+        self.ui.button.return_value.props.return_value.classes.assert_any_call(
+            "photo-preview-folder text-blue-3 underline min-w-0 max-w-full"
+        )
+        self.ui.button.return_value.props.return_value.classes.return_value.tooltip.assert_any_call(
+            "Find in File Explorer"
+        )
+        with patch("subprocess.Popen") as popen:
+            for link in links:
+                link.kwargs["on_click"]()
+        self.assertEqual([call.args[0] for call in popen.call_args_list],
+                         [["explorer.exe", "/select,", str(first)],
+                          ["explorer.exe", "/select,", str(second)]])
+
     async def test_photo_preview_reports_missing_source(self):
         self.state["run"].io_bound = AsyncMock(side_effect=FileNotFoundError("missing photo"))
         await self.state["open_photo_preview"]("missing.jpg")
         self.ui.label.return_value.classes.return_value.set_text.assert_called_with(
             "Could not load photo: missing photo"
         )
+        link = next(call for call in self.ui.button.call_args_list
+                    if call.args and call.args[0] == str(Path("missing.jpg").parent))
+        with patch("subprocess.Popen") as popen:
+            link.kwargs["on_click"]()
+        popen.assert_not_called()
+        self.assertIn("Original photo not found:", self.ui.notify.call_args.args[0])
 
     async def test_closing_photo_preview_before_load_finishes_does_not_update_it(self):
         async def close_during_load(*args):

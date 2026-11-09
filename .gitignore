@@ -1,5 +1,6 @@
 # Photo index, settings, generated thumbnails and previews.
 /data/
+/.photo-search-config.json
 
 # Python environments and generated files.
 /venv/
