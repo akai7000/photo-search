@@ -7,6 +7,10 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
+if __name__ == "__main__" and getattr(sys, "frozen", False):
+    from core.frozen_startup import initialize
+    initialize()
+
 from core import startup
 from core.version import APP_VERSION
 

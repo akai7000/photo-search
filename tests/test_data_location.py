@@ -1,5 +1,7 @@
 import json
+import os
 import sqlite3
+import sys
 import tempfile
 import unittest
 from contextlib import closing
@@ -24,6 +26,24 @@ class DataLocationTests(unittest.TestCase):
         data_location.save_data_directory(self.root)
         self.assertEqual(data_location.load_data_directory(), self.root)
         self.assertEqual(json.loads(self.config.read_text(encoding="utf-8"))["data_directory"], str(self.root))
+
+    def test_installed_storage_uses_local_app_data(self):
+        with patch.object(sys, "frozen", True, create=True), \
+             patch.dict(os.environ, {"LOCALAPPDATA": str(self.root)}):
+            data, config = data_location.storage_paths()
+        self.assertEqual(data, self.root / "Photo Search" / "data")
+        self.assertEqual(config, self.root / "Photo Search" / "config.json")
+
+    def test_installed_storage_requires_local_app_data(self):
+        with patch.object(sys, "frozen", True, create=True), \
+             patch.dict(os.environ, {"LOCALAPPDATA": ""}):
+            with self.assertRaisesRegex(RuntimeError, "LOCALAPPDATA"):
+                data_location.storage_paths()
+
+    def test_saving_creates_config_directory(self):
+        with patch.object(data_location, "CONFIG_PATH", self.root / "new" / "config.json"):
+            data_location.save_data_directory(self.root)
+            self.assertEqual(data_location.load_data_directory(), self.root)
 
     def test_missing_or_invalid_config_is_reported(self):
         self.config.write_text('{"data_directory": "relative"}', encoding="utf-8")

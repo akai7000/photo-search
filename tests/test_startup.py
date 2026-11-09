@@ -20,6 +20,23 @@ class StartupTests(unittest.TestCase):
         self.addCleanup(self.process_patch.stop)
         self.addCleanup(self.failed_patch.stop)
 
+    def test_frozen_splash_uses_executable_mode(self):
+        process = MagicMock()
+        process.stdout.readline.return_value = "ready\n"
+        with patch.object(startup.sys, "frozen", True, create=True), \
+             patch.object(startup.subprocess, "Popen", return_value=process) as popen:
+            startup.start_splash()
+        self.assertEqual(popen.call_args.args[0], [startup.sys.executable, "--photo-search-splash"])
+
+    def test_source_splash_uses_python_script(self):
+        process = MagicMock()
+        process.stdout.readline.return_value = "ready\n"
+        with patch.object(startup.sys, "frozen", False, create=True), \
+             patch.object(startup.subprocess, "Popen", return_value=process) as popen:
+            startup.start_splash()
+        self.assertEqual(popen.call_args.args[0],
+                         [startup.sys.executable, "-u", str(Path(startup.__file__).with_name("startup_splash.py"))])
+
     def test_progress_and_close_send_ordered_messages(self):
         startup.report("Database initialized.")
         startup.report("Using GPU: Test GPU (CUDA 12.4)")

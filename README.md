@@ -33,16 +33,19 @@ Review detected face groups and assign names.
 
 ![Name People dialog showing sample face groups](images/screenshots/name-people.png)
 
-By default, the application stores its SQLite index, settings, and generated thumbnails under `data/` in the project directory. In **Settings > Data Storage**, type an existing folder path or select **Browse**, then select **Update** to use it. The chosen directory is remembered between runs, and its existing index and thumbnails are used without moving or copying data. An empty directory gets a new index; thumbnails are generated as needed. A damaged or incompatible database is left untouched and the change is rejected. Stop indexing and searches and close Name People before changing directories. Original photos remain in their selected folders. **Reset Index** in Settings deletes the active index contents, names, generated thumbnails, and settings; it does not delete the original photos or change the data directory.
+When run from source, the application stores its SQLite index, settings, and generated thumbnails under `data/` in the project directory. Installed versions use `%LOCALAPPDATA%\Photo Search\data` by default. In **Settings > Data Storage**, type an existing folder path or select **Browse**, then select **Update** to use it. The chosen directory is remembered between runs, and its existing index and thumbnails are used without moving or copying data. An empty directory gets a new index; thumbnails are generated as needed. A damaged or incompatible database is left untouched and the change is rejected. Stop indexing and searches and close Name People before changing directories. Original photos remain in their selected folders. **Reset Index** in Settings deletes the active index contents, names, generated thumbnails, and settings; it does not delete the original photos or change the data directory.
 
-## Requirements
+## Windows installers
 
-- Windows and Python 3.10 or later.
-- Dependencies listed in `requirements.txt`.
-- A compatible NVIDIA GPU and CUDA/cuDNN setup are recommended for accelerated indexing. CPU execution may be slower. The included `onnxruntime-gpu` dependency also requires a compatible runtime setup.
-- Internet access may be required the first time model weights are downloaded by OpenCLIP and InsightFace.
+Choose the **CPU** installer for any supported PC, or the **GPU** installer for an NVIDIA GPU with a compatible driver. Each installer is a single executable for 64-bit Windows 10 version 1809 or later; Python is not required on the target PC. The GPU build uses CUDA 12.4 PyTorch and CUDA 12 ONNX Runtime. If the driver or GPU is incompatible, processing may fall back to the CPU. Microsoft Edge WebView2 Runtime is required for the native window.
 
-## Installation and startup
+The installers do not contain a photo index, thumbnails, or AI model weights. On first startup, an internet connection and additional disk space are needed to download the OpenCLIP and InsightFace models. Startup can take several minutes. InsightFace stores its model under `%USERPROFILE%\.insightface`; OpenCLIP uses the Hugging Face cache. These caches may be shared with other applications. Review the [InsightFace model license](https://github.com/deepinsight/insightface/tree/master/python-package#license): its pretrained models are for **non-commercial research only**, including when automatically downloaded.
+
+The installed app stores its data-directory selection and diagnostic log under `%LOCALAPPDATA%\Photo Search`. The log can contain local paths; review it before sharing. Uninstalling the application does not remove this directory, the model caches, or original photos. An existing source-run index is not automatically moved: select its data directory in Settings if you want to use it. Close one edition before opening the other because they share the same data directory. The installers are unsigned, so Windows may display a publisher warning.
+
+## Running from source
+
+Source execution requires Windows, Python 3.10 or later, and the dependencies in `requirements.txt`. For GPU acceleration, use a compatible NVIDIA driver, PyTorch, CUDA and cuDNN setup.
 
 From the project directory in PowerShell:
 
@@ -53,6 +56,30 @@ python -m venv venv
 ```
 
 For GPU acceleration, install a PyTorch build compatible with your CUDA setup if the default installation does not provide one. Model loading can take time on the first startup.
+
+## Building Windows installers
+
+Use 64-bit Python 3.13 and Inno Setup 7. Build each variant in a separate virtual environment. For example, from PowerShell in the project directory, create the CPU environment:
+
+```powershell
+py -3.13 -m venv .venv-cpu
+.\.venv-cpu\Scripts\python.exe -m pip install torch==2.6.0+cpu torchvision==0.21.0+cpu --index-url https://download.pytorch.org/whl/cpu
+.\.venv-cpu\Scripts\python.exe -m pip install -r packaging\requirements-windows.txt
+.\.venv-cpu\Scripts\python.exe packaging\build_windows.py CPU --iscc "C:\path\to\ISCC.exe"
+```
+
+For the GPU environment, replace the CPU PyTorch installation with the CUDA 12.4 build, then replace the CPU ONNX Runtime installed by the requirements with the GPU version. Do not leave both ONNX Runtime distributions installed:
+
+```powershell
+py -3.13 -m venv .venv-gpu
+.\.venv-gpu\Scripts\python.exe -m pip install torch==2.6.0+cu124 torchvision==0.21.0+cu124 --index-url https://download.pytorch.org/whl/cu124
+.\.venv-gpu\Scripts\python.exe -m pip install -r packaging\requirements-windows.txt
+.\.venv-gpu\Scripts\python.exe -m pip uninstall -y onnxruntime
+.\.venv-gpu\Scripts\python.exe -m pip install onnxruntime-gpu==1.20.2
+.\.venv-gpu\Scripts\python.exe packaging\build_windows.py GPU --iscc "C:\path\to\ISCC.exe"
+```
+
+InsightFace declares the CPU `onnxruntime` package as a dependency, so `pip check` may report it missing in the GPU environment even though the GPU distribution supplies the same module. The build script checks the selected runtime, rejects bundled database/model files, includes third-party notices, and writes installers to `dist\installers`. Build artifacts can be several gigabytes; allow ample free disk space. Code signing and publication are separate steps.
 
 ## Using the application
 
