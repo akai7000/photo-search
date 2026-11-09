@@ -11,6 +11,28 @@ Photo Search is a Windows desktop application for indexing and searching a perso
 - View paginated search results as thumbnails and open a larger, orientation-corrected preview.
 - Configure face page size, initially expanded groups, and group-delete confirmations.
 
+## Screenshots
+
+These screenshots use an isolated demonstration library with illustrated sample images.
+
+### Main page
+
+View searchable folders and their indexing status.
+
+![Main page showing searchable folders and the search box](images/screenshots/main-page.png)
+
+### Search results
+
+Search for a description or a person's name and browse matching photos.
+
+![Search results showing a grid of sample images](images/screenshots/search-results.png)
+
+### Name People
+
+Review detected face groups and assign names.
+
+![Name People dialog showing sample face groups](images/screenshots/name-people.png)
+
 By default, the application stores its SQLite index, settings, and generated thumbnails under `data/` in the project directory. In **Settings > Data Storage**, type an existing folder path or select **Browse**, then select **Update** to use it. The chosen directory is remembered between runs, and its existing index and thumbnails are used without moving or copying data. An empty directory gets a new index; thumbnails are generated as needed. A damaged or incompatible database is left untouched and the change is rejected. Stop indexing and searches and close Name People before changing directories. Original photos remain in their selected folders. **Reset Index** in Settings deletes the active index contents, names, generated thumbnails, and settings; it does not delete the original photos or change the data directory.
 
 ## Requirements
