@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timezone
 
 from core import startup
+from core.version import APP_VERSION
 
 if __name__ == "__main__":
     startup.start_splash()
@@ -31,7 +32,9 @@ from nicegui import ui, native, app, run
 from PIL import Image
 from pathlib import Path
 startup.report("Initializing database...")
-from core.database import add_folder as add_folder_db, get_folder_progress, get_folders, init_db, get_photo_count, delete_all_photos, remove_folder_db, save_setting, load_setting, get_connection, get_clusters, get_people_names, suggest_group_names, assign_name_to_cluster, assign_selected_faces, delete_face_group, delete_selected_faces, rename_person, find_photos_by_person_name, search_people_query
+from core import database, face_thumbnails
+from core.data_location import save_data_directory
+from core.database import add_folder as add_folder_db, get_folder_progress, get_folders, init_db, get_photo_count, delete_all_photos, save_setting, load_setting, get_connection, get_clusters, get_people_names, suggest_group_names, assign_name_to_cluster, assign_selected_faces, delete_face_group, delete_selected_faces, rename_person, find_photos_by_person_name, search_people_query
 from core.database import format_folder_status, get_face_photo_details, get_search_photo_details
 init_db()
 startup.report("Database initialized.")
@@ -40,10 +43,12 @@ from core.clip_engine import search_photos
 startup.report("Image search model loaded.")
 startup.report("Loading face detection model...")
 from core.scanner import scan_folders
+import core.scanner as scanner
 startup.report("Face detection model loaded.")
 startup.report("Loading face grouping tools...")
 from core.face_clustering import cluster_faces
 from core.face_thumbnails import delete_face_thumbnails, ensure_face_thumbnails
+from core.folder_removal import remove_folder_and_index
 from core.photo_preview import create_photo_preview
 startup.report("Face grouping tools loaded.")
 import webview, json, time, threading
@@ -65,6 +70,23 @@ INITIAL_OPEN_GROUPS = 3
 GROUP_PAGE_SIZE = 20
 FACE_PAGE_SIZE_OPTIONS = (24, 32, 40, 48)
 INITIAL_OPEN_GROUPS_OPTIONS = tuple(range(1, 11))
+data_switching = False
+storage_jobs = 0
+name_people_active = 0
+search_results_container = None
+
+
+async def storage_io_bound(func, *args):
+    global storage_jobs
+    storage_jobs += 1
+    try:
+        return await run.io_bound(func, *args)
+    finally:
+        storage_jobs -= 1
+
+
+def storage_is_busy():
+    return data_switching or storage_jobs > 0 or index_progress["active"] or name_people_active
 
 
 def load_face_settings():
@@ -77,11 +99,18 @@ def load_face_settings():
     return page_size, open_groups
 
 async def add_folder():
+    if data_switching:
+        ui.notify("Wait for the data directory change to finish.", type="warning")
+        return
     # Correct way in NiceGUI native mode
+    original_database = database.DB_PATH
     result = await app.native.main_window.create_file_dialog(
         dialog_type=webview.FileDialog.FOLDER
     )
     if result:
+        if data_switching or database.DB_PATH != original_database:
+            ui.notify("Wait for the data directory change to finish.", type="warning")
+            return
         folder_path = result[0]
         if folder_path not in selected_folders:
             add_folder_db(folder_path)
@@ -92,11 +121,58 @@ async def add_folder():
             ui.notify("Folder already added")
 
 def remove_folder(folder):
-    if folder in selected_folders:
-        selected_folders.remove(folder)
-        remove_folder_db(folder)
-        ui.notify(f"Removed: {folder}")
-        refresh_folders()
+    if storage_is_busy():
+        ui.notify("Wait for indexing or search to finish and close Name People before removing a folder.", type="warning")
+        return
+    if folder not in selected_folders:
+        ui.notify("The folder is no longer in the searchable folders list.", type="warning")
+        return
+    confirmed_database = database.DB_PATH
+    with ui.dialog() as dialog, ui.card().classes("w-full max-w-xl"):
+        ui.label("Remove searchable folder?").classes("text-h6")
+        ui.label(folder).classes("break-all")
+        ui.label(
+            "This removes the folder from the list and deletes its indexed photos, faces and generated "
+            "thumbnails, except photos also covered by another searchable folder. "
+            "Original photo files and saved people will not be deleted."
+        )
+        with ui.row().classes("w-full justify-end"):
+            ui.button("Cancel", on_click=dialog.close).props("flat")
+            ui.button("Remove folder", on_click=lambda: confirm_remove_folder(folder, dialog, confirmed_database),
+                      color="negative")
+    dialog.open()
+
+
+def confirm_remove_folder(folder, dialog, confirmed_database):
+    if storage_is_busy():
+        ui.notify("Wait for indexing or search to finish and close Name People before removing a folder.", type="warning")
+        return
+    if database.DB_PATH != confirmed_database:
+        ui.notify("The data directory changed. Reopen the folder confirmation.", type="warning")
+        return
+    if folder not in selected_folders:
+        ui.notify("The folder is no longer in the searchable folders list.", type="warning")
+        return
+    try:
+        count, errors = remove_folder_and_index(folder)
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        ui.notify(f"Could not remove folder: {exc}", type="negative")
+        return
+    selected_folders.remove(folder)
+    dialog.close()
+    if search_results_container is not None:
+        search_results_container.clear()
+    refresh_photo_count()
+    refresh_folders()
+    if errors:
+        for error in errors:
+            logging.error("Folder removal: %s", error)
+        ui.notify(
+            f"Folder removed, but {len(errors)} generated thumbnail(s) could not be removed. "
+            "See the application log for details.", type="warning"
+        )
+    else:
+        ui.notify(f"Removed folder and {count} indexed photo(s).")
 
 STATUS_COLORS = {"complete": "positive", "partial": "warning", "not": "grey"}
 index_progress = {"done": 0, "total": 0, "current": "", "root": "", "folder": "", "active": False}
@@ -159,7 +235,7 @@ def refresh_folders():
                             if indexed_at.tzinfo is None:
                                 indexed_at = indexed_at.replace(tzinfo=timezone.utc)
                             indexed_at = indexed_at.astimezone()
-                            ui.label(indexed_at.strftime("%Y-%m-%d"))
+                            ui.label(f"{indexed_at.strftime('%b')} {indexed_at.day}, {indexed_at.year}")
                         else:
                             ui.label("-")
                         with ui.element("div"):
@@ -169,15 +245,26 @@ def refresh_folders():
                         ).tooltip("Remove folder")
 
 async def index_folders():
+    if data_switching:
+        ui.notify("Wait for the data directory change to finish.", type="warning")
+        return
     if not selected_folders:
         ui.notify("Please select at least one folder first")
         return
     if index_progress["active"]:
         ui.notify("Indexing is already running")
         return
+    try:
+        skip_indexed = load_setting("skip_indexed_folders", True)
+        if type(skip_indexed) is not bool:
+            raise ValueError("Invalid Skip Previously Indexed Folders setting")
+    except (sqlite3.Error, ValueError) as exc:
+        ui.notify(f"Could not load indexing settings: {exc}", type="negative")
+        return
 
     ui.notify("Indexing started...")
     start_time = time.time()
+    folders_to_scan = list(selected_folders)
     index_progress.update(done=0, total=0, current="Counting files...", active=True)
     update_progress_widgets()
 
@@ -191,10 +278,15 @@ async def index_folders():
     # Run the heavy indexing work in a background thread
     cancel_event.clear()
     try:
-        result = await run.io_bound(scan_folders, selected_folders, on_progress, cancel_event)
-        index_progress.update(root="", folder="", current="Grouping faces...")
-        update_progress_widgets()
-        n_clusters = await run.io_bound(cluster_faces)
+        def scan():
+            return scan_folders(folders_to_scan, on_progress, cancel_event, skip_indexed_folders=skip_indexed)
+        result = await run.io_bound(scan)
+        if result["folders_skipped"] == len(folders_to_scan):
+            n_clusters = None
+        else:
+            index_progress.update(root="", folder="", current="Grouping faces...")
+            update_progress_widgets()
+            n_clusters = await run.io_bound(cluster_faces)
     finally:
         index_progress["active"] = False
         update_progress_widgets()
@@ -206,7 +298,8 @@ async def index_folders():
         f"Indexing {'cancelled' if result['cancelled'] else 'finished'} in {elapsed:.1f} seconds. "
         f"Added: {result['added']}, Updated: {result['updated']}, "
         f"Skipped: {result['skipped']}, Errors: {result['errors']}"
-        f"People found: {n_clusters}"
+        f", Folders skipped: {result['folders_skipped']}"
+        + (f", People found: {n_clusters}" if n_clusters is not None else "")
     )
 
     # UI updates happen safely on the main thread after the work finishes
@@ -214,7 +307,8 @@ async def index_folders():
     ui.notify(
         f"{prefix} Added: {result['added']}, Updated: {result['updated']}, "
         f"Skipped: {result['skipped']}, Errors: {result['errors']}, "
-        f"People found: {n_clusters}"
+        f"Folders skipped: {result['folders_skipped']}"
+        + (f", People found: {n_clusters}" if n_clusters is not None else "")
     )
     refresh_photo_count()
     refresh_folders()
@@ -243,10 +337,11 @@ def refresh_photo_count():
         photo_count_label.set_text(f"{count} photos indexed")
 
 def confirm_reset(settings_dialog):
-    if index_progress["active"]:
+    if index_progress["active"] or data_switching:
         ui.notify("Cancel indexing and wait for it to finish before resetting the index.", type="warning")
         return
     with ui.dialog() as dialog, ui.card():
+        confirmed_database = database.DB_PATH
         ui.label("Are you sure you want to reset the index?")
         ui.label(
             "Indexed photo records, face groups, names, generated thumbnails and settings will be deleted. "
@@ -255,23 +350,25 @@ def confirm_reset(settings_dialog):
         
         with ui.row().classes("w-full justify-end"):
             ui.button("Cancel", on_click=dialog.close).props("flat")
-            ui.button("Reset", on_click=lambda: do_reset(dialog, settings_dialog), color="negative")
+            ui.button("Reset", on_click=lambda: do_reset(dialog, settings_dialog, confirmed_database), color="negative")
 
     dialog.open()
 
-def do_reset(dialog, settings_dialog):
-    if index_progress["active"]:
+def do_reset(dialog, settings_dialog, confirmed_database=None):
+    if index_progress["active"] or data_switching:
         ui.notify("Cancel indexing and wait for it to finish before resetting the index.", type="warning")
+        return
+    if confirmed_database is not None and database.DB_PATH != confirmed_database:
+        ui.notify("The data directory changed. Reopen Settings to reset its index.", type="warning")
         return
     dialog.close()
     delete_all_photos()
 
     # Delete thumbnail folders
-    for folder in ["data/thumbnails", "data/face_thumbnails"]:
-        path = Path(folder)
+    for path in (database.DB_PATH.parent / "thumbnails", database.DB_PATH.parent / "face_thumbnails"):
         if path.exists():
             shutil.rmtree(path)
-            print(f"Deleted {folder}")
+            print(f"Deleted {path}")
 
     refresh_photo_count()
     refresh_folders()
@@ -295,11 +392,18 @@ def show_photo_in_explorer(photo_path: str):
 async def open_photo_preview(photo_path: str):
     closed = False
     with ui.dialog() as dialog, ui.card().classes("w-full max-w-5xl max-h-[90vh] overflow-hidden no-wrap"):
-        with ui.row().classes("w-full items-center justify-between no-wrap"):
-            ui.label(Path(photo_path).name).classes("text-subtitle1 break-all")
-            ui.button(icon="close", on_click=dialog.close).props(
-                'flat round dense aria-label="Close preview"'
-            ).tooltip("Close")
+        with ui.row().classes("w-full items-center no-wrap"):
+            ui.label(Path(photo_path).name).classes("text-subtitle1 min-w-0 flex-1 truncate")
+            with ui.row().classes("min-w-0 flex-1 justify-center no-wrap"):
+                ui.button(
+                    str(Path(photo_path).parent), on_click=lambda: show_photo_in_explorer(photo_path),
+                ).props("flat dense no-caps").classes("photo-preview-folder text-blue-3 underline min-w-0 max-w-full").tooltip(
+                    "Find in File Explorer"
+                )
+            with ui.row().classes("min-w-0 flex-1 justify-end no-wrap"):
+                ui.button(icon="close", on_click=dialog.close).props(
+                    'flat round dense aria-label="Close preview"'
+                ).tooltip("Close")
         status = ui.label("Loading photo...").classes("text-caption")
         preview = ui.image().classes("w-full h-[70vh]").props('fit=contain')
         preview.set_visibility(False)
@@ -384,22 +488,44 @@ def prepare_face_page(face_ids):
 
 
 def open_name_people(group_page=1):
+    global name_people_active
+    if data_switching:
+        ui.notify("Wait for the data directory change to finish.", type="warning")
+        return
+    name_people_active += 1
     with ui.context.client.layout:
         with ui.dialog() as loading, ui.card().classes("items-center p-8"):
             ui.spinner(size="lg", color="primary")
             ui.label("Opening Name People...").classes("text-subtitle1")
     closed = False
+    dialog_open = False
+    released = False
+
+    def release():
+        nonlocal released
+        global name_people_active
+        if not released:
+            released = True
+            name_people_active -= 1
+
+    def mark_open():
+        nonlocal dialog_open
+        dialog_open = True
 
     def close_loading():
         nonlocal closed
         closed = True
+        if not dialog_open:
+            release()
 
     loading.on("hide", close_loading)
     loading.open()
 
     async def load():
+        if closed:
+            return
         try:
-            data = await run.io_bound(prepare_name_people)
+            data = await storage_io_bound(prepare_name_people)
         except Exception as exc:
             if not closed:
                 loading.close()
@@ -413,7 +539,7 @@ def open_name_people(group_page=1):
             ui.notify("No face groups found. Index photos with people first.")
             return
         try:
-            await render_name_people(data, loading, lambda: closed, group_page)
+            await render_name_people(data, loading, lambda: closed, mark_open, release, group_page)
         except Exception as exc:
             if not closed:
                 loading.close()
@@ -424,7 +550,7 @@ def open_name_people(group_page=1):
         ui.timer(0.01, load, once=True)
 
 
-async def render_name_people(data, loading, is_closed, initial_group_page=1):
+async def render_name_people(data, loading, is_closed, mark_open, release, initial_group_page=1):
     clusters, skip_confirmation, face_page_size, initial_open_groups, people_names, suggestions, initial_pages = data
     group_page_count = max(1, (len(clusters) + GROUP_PAGE_SIZE - 1) // GROUP_PAGE_SIZE)
     group_page = min(max(1, initial_group_page), group_page_count)
@@ -441,6 +567,7 @@ async def render_name_people(data, loading, is_closed, initial_group_page=1):
     def mark_dialog_closed():
         nonlocal dialog_closed
         dialog_closed = True
+        release()
 
     dialog.on("hide", mark_dialog_closed)
     with dialog, ui.card().classes("w-full max-w-4xl max-h-[85vh] overflow-hidden no-wrap"):
@@ -591,8 +718,10 @@ async def render_name_people(data, loading, is_closed, initial_group_page=1):
                             ui.spinner(size="md", color="primary")
 
                         async def load_page():
+                            if dialog_closed:
+                                return
                             try:
-                                result = await run.io_bound(prepare_face_page, page_ids)
+                                result = await storage_io_bound(prepare_face_page, page_ids)
                             except Exception as exc:
                                 if not dialog_closed and generation == group_generation and request == page_request:
                                     loaded.clear()
@@ -853,8 +982,10 @@ async def render_name_people(data, loading, is_closed, initial_group_page=1):
                     nonlocal clusters, skip_confirmation, face_page_size, initial_open_groups
                     nonlocal people_names, suggestions, initial_pages, group_page, group_page_count
                     nonlocal group_generation, refreshing, replenish_open_groups
+                    if dialog_closed:
+                        return
                     try:
-                        data = await run.io_bound(prepare_name_people)
+                        data = await storage_io_bound(prepare_name_people)
                     except Exception as exc:
                         if not dialog_closed:
                             refreshing = False
@@ -926,7 +1057,66 @@ async def render_name_people(data, loading, is_closed, initial_group_page=1):
         dialog.delete()
         return
     dialog.open()
+    mark_open()
     loading.close()
+
+
+async def choose_data_directory(data_directory):
+    try:
+        result = await app.native.main_window.create_file_dialog(dialog_type=webview.FileDialog.FOLDER)
+    except Exception as exc:
+        logging.exception("Could not open data directory picker")
+        ui.notify(f"Could not open folder picker: {exc}", type="negative")
+        return
+    if result:
+        data_directory.set_value(result[0])
+
+
+async def change_data_directory(path, settings_dialog):
+    global data_switching, selected_folders
+    if storage_is_busy():
+        ui.notify("Close Name People and wait for indexing or searches to finish before changing the data directory.", type="warning")
+        return
+    try:
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError("Enter a data directory")
+        directory = Path(path.strip())
+        if not directory.is_absolute():
+            raise ValueError("Enter an absolute data directory path")
+        directory = directory.resolve()
+    except (OSError, ValueError) as exc:
+        ui.notify(f"Could not select data directory: {exc}", type="negative")
+        return
+    if directory == database.DB_PATH.parent.resolve():
+        ui.notify("This is already the current data directory.")
+        return
+    data_switching = True
+    try:
+        def prepare():
+            database.prepare_database(directory)
+            conn = database.get_connection(directory / "photo_search.db")
+            try:
+                return [row["path"] for row in conn.execute("SELECT path FROM folders ORDER BY path")]
+            finally:
+                conn.close()
+        try:
+            folders = await run.io_bound(prepare)
+            save_data_directory(directory)
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            ui.notify(f"Could not change data directory: {exc}. The current directory remains selected.", type="negative")
+            return
+        database.DB_PATH = directory / "photo_search.db"
+        scanner.THUMBNAIL_DIR = directory / "thumbnails"
+        face_thumbnails.FACE_THUMBNAIL_DIR = directory / "face_thumbnails"
+        selected_folders = folders
+        if search_results_container is not None:
+            search_results_container.clear()
+        refresh_photo_count()
+        refresh_folders()
+        settings_dialog.close()
+        ui.notify(f"Data directory changed to {directory}")
+    finally:
+        data_switching = False
 
 BUSY_OVERLAY_HTML = """
 <style>
@@ -960,8 +1150,12 @@ BUSY_OVERLAY_HTML = """
 
 
 def open_settings():
+    settings_database = database.DB_PATH
     try:
         saved_value = load_setting("skip_delete_group_confirmation", False)
+        skip_indexed_value = load_setting("skip_indexed_folders", True)
+        if type(skip_indexed_value) is not bool:
+            raise ValueError("Invalid Skip Previously Indexed Folders setting")
         face_page_size, initial_open_groups = load_face_settings()
     except (sqlite3.Error, ValueError) as exc:
         ui.notify(f"Could not load settings: {exc}", type="negative")
@@ -973,9 +1167,28 @@ def open_settings():
             ui.button(icon="close", on_click=dialog.close).props(
                 'flat round dense aria-label="Close"'
             ).tooltip("Close")
-        with ui.column().classes("w-full gap-4 overflow-y-auto"):
-            ui.label("Changes are saved automatically.").classes("text-caption text-gray-400")
-            with ui.column().classes("w-full gap-0 rounded overflow-hidden bg-grey-9"):
+        with ui.column().classes("w-full min-h-0 gap-4 overflow-y-auto"):
+            ui.label("Most changes are saved automatically. Use Update to change the data directory.").classes(
+                "text-caption text-gray-400"
+            )
+            with ui.column().classes("w-full shrink-0 gap-0 rounded overflow-hidden bg-grey-9"):
+                ui.label("Data Storage").classes(
+                    "w-full bg-grey-8 text-grey-2 text-body2 text-bold px-3 py-2"
+                )
+                with ui.column().classes("w-full gap-3 p-4"):
+                    data_directory = ui.input(
+                        label="Data directory", value=str(database.DB_PATH.parent),
+                    ).classes("w-full")
+                    ui.label(
+                        "The index, settings and thumbnails are stored here. Changing the directory does not move existing data."
+                    ).classes("text-caption text-gray-400")
+                    ui.label("Enter a folder path or use Browse, then select Update.").classes(
+                        "text-caption text-gray-400"
+                    )
+                    with ui.row().classes("w-full items-center"):
+                        ui.button("Browse", on_click=lambda: choose_data_directory(data_directory), icon="folder_open").props("outline no-caps")
+                        ui.button("Update", on_click=lambda: change_data_directory(data_directory.value, dialog), color="primary").props("no-caps")
+            with ui.column().classes("w-full shrink-0 gap-0 rounded overflow-hidden bg-grey-9"):
                 ui.label("Name People").classes(
                     "w-full bg-grey-8 text-grey-2 text-body2 text-bold px-3 py-2"
                 )
@@ -1004,11 +1217,16 @@ def open_settings():
                             "Delete group removes all faces in the group without asking. "
                             "Original photos are not deleted; deleting selected faces still requires confirmation."
                         ).classes("text-caption text-gray-400")
-            with ui.column().classes("w-full gap-0 rounded overflow-hidden bg-grey-9"):
+            with ui.column().classes("w-full shrink-0 gap-0 rounded overflow-hidden bg-grey-9"):
                 ui.label("Indexing").classes(
                     "w-full bg-grey-8 text-grey-2 text-body2 text-bold px-3 py-2"
                 )
                 with ui.column().classes("w-full gap-3 p-4"):
+                    skip_indexed = ui.switch("Skip Previously Indexed Folders", value=skip_indexed_value)
+                    ui.label(
+                        "Skip completely indexed folders and their subfolders, even if photos have been added or changed. "
+                        "Turn this off to scan them again. Partially indexed folders are still scanned."
+                    ).classes("text-caption text-gray-400")
                     ui.label("Reset index").classes("text-body1 text-bold")
                     ui.label(
                         "Deletes indexed photo records, face groups, names, generated thumbnails and settings. "
@@ -1021,6 +1239,9 @@ def open_settings():
 
             def save_confirmation_setting(event):
                 nonlocal saved_value
+                if data_switching or database.DB_PATH != settings_database:
+                    ui.notify("Reopen Settings after changing the data directory.", type="warning")
+                    return
                 if event.value == saved_value:
                     return
                 try:
@@ -1033,11 +1254,36 @@ def open_settings():
 
             skip_confirmation.on_value_change(save_confirmation_setting)
 
+            def save_skip_indexed(event):
+                nonlocal skip_indexed_value
+                if data_switching or database.DB_PATH != settings_database:
+                    skip_indexed.set_value(skip_indexed_value)
+                    ui.notify("Reopen Settings after changing the data directory.", type="warning")
+                    return
+                if event.value == skip_indexed_value:
+                    return
+                if type(event.value) is not bool:
+                    skip_indexed.set_value(skip_indexed_value)
+                    ui.notify("Invalid Skip Previously Indexed Folders setting", type="negative")
+                    return
+                try:
+                    save_setting("skip_indexed_folders", event.value)
+                except sqlite3.Error as exc:
+                    skip_indexed.set_value(skip_indexed_value)
+                    ui.notify(f"Could not save setting: {exc}", type="negative")
+                    return
+                skip_indexed_value = event.value
+
+            skip_indexed.on_value_change(save_skip_indexed)
+
             def bind_number_setting(control, key, initial_value, options):
                 saved_number = initial_value
 
                 def save_number(event):
                     nonlocal saved_number
+                    if data_switching or database.DB_PATH != settings_database:
+                        ui.notify("Reopen Settings after changing the data directory.", type="warning")
+                        return
                     if event.value == saved_number:
                         return
                     if type(event.value) is not int or event.value not in options:
@@ -1080,6 +1326,12 @@ def main_page():
         }
         .settings-select .q-field__label {
             font-size: 20px;
+        }
+        .photo-preview-folder .q-btn__content {
+            display: block;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
     """)
     ui.dark_mode().enable()
@@ -1140,6 +1392,9 @@ def main_page():
 
         async def do_search():
             nonlocal search_running
+            if data_switching:
+                ui.notify("Wait for the data directory change to finish.", type="warning")
+                return
             query = search_input.value.strip()
             if not query:
                 ui.notify("Enter a search term")
@@ -1155,7 +1410,7 @@ def main_page():
                     ui.spinner(size="md", color="primary")
                     ui.label("Searching...")
             try:
-                results, details = await run.io_bound(find_search_results, query)
+                results, details = await storage_io_bound(find_search_results, query)
             except Exception as exc:
                 logging.exception("Search failed")
                 results_container.clear()
@@ -1213,6 +1468,8 @@ def main_page():
 
         # Results container (appears below the search bar)
         results_container = ui.column().classes("w-full")
+        global search_results_container
+        search_results_container = results_container
 
     # Load initial photo count
     refresh_photo_count()
@@ -1223,7 +1480,7 @@ startup.report("Opening Photo Search...")
 app.native.on("shown", window_ready.window_shown)
 app.native.on("loaded", window_ready.window_loaded)
 ui.run(
-    title="Photo Search v0.2",
+    title=f"Photo Search v{APP_VERSION}",
     native=True,
     window_size=(1300, 900),
     fullscreen=False,

@@ -1,14 +1,15 @@
 import hashlib, exifread, time
+import os
 from pathlib import Path
 from typing import List, Set
 from PIL import Image, ImageOps, ExifTags
 from datetime import datetime
-from core.database import insert_or_update_photo, get_connection, mark_folder_indexed, insert_face, set_folder_total
+from core.database import insert_or_update_photo, get_connection, mark_folder_indexed, insert_face, set_folder_total, get_folder_progress, DB_PATH
 from core.clip_engine import get_image_embedding
 from core.face_engine import detect_faces
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif", ".heic", ".raw"}
-THUMBNAIL_DIR = Path("data/thumbnails")
+THUMBNAIL_DIR = DB_PATH.parent / "thumbnails"
 
 def compute_file_hash(path: Path) -> str:
     """Compute a fast hash of the file (first 1 MB + size + mtime is often enough, but full hash is safer)."""
@@ -19,7 +20,7 @@ def compute_file_hash(path: Path) -> str:
             hasher.update(chunk)
     return hasher.hexdigest()
 
-def scan_folders(folders: List[str], progress_callback=None, cancel_event=None) -> dict:
+def scan_folders(folders: List[str], progress_callback=None, cancel_event=None, *, skip_indexed_folders=False) -> dict:
     """
     Scan the given folders for image files and insert/update them in the database.
     Returns a summary dict.
@@ -32,23 +33,44 @@ def scan_folders(folders: List[str], progress_callback=None, cancel_event=None) 
 
     all_paths: Set[str] = set()
 
+    skipped_roots = {}
+    if skip_indexed_folders:
+        for folder_str in folders:
+            progress = get_folder_progress(folder_str)
+            if progress["scan_completed"] and progress["state"] == "complete":
+                skipped_roots[os.path.normcase(os.path.abspath(folder_str))] = progress["total"]
+
     # Count everything first so progress can show "n of total".
     work: list[tuple[str, Path]] = []
     folder_totals: dict[str, int] = {}
     for folder_str in folders:
         folder = Path(folder_str)
+        if os.path.normcase(os.path.abspath(folder_str)) in skipped_roots:
+            continue
         if not folder.exists():
             continue
-        folder_files = [
-            p for p in folder.rglob("*")
-            if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
-        ]
-        set_folder_total(folder_str, len(folder_files))
+        def raise_walk_error(error):
+            raise error
+        folder_files = []
+        excluded_total = 0
+        for root, dirs, filenames in os.walk(folder, onerror=raise_walk_error):
+            remaining_dirs = []
+            for name in dirs:
+                child = os.path.normcase(os.path.abspath(os.path.join(root, name)))
+                if child in skipped_roots:
+                    excluded_total += skipped_roots[child]
+                else:
+                    remaining_dirs.append(name)
+            dirs[:] = remaining_dirs
+            folder_files.extend(Path(root) / name for name in filenames
+                                if Path(name).suffix.lower() in IMAGE_EXTENSIONS and (Path(root) / name).is_file())
+        set_folder_total(folder_str, len(folder_files) + excluded_total)
         folder_totals[folder_str] = len(folder_files)
         work.extend((folder_str, p) for p in folder_files)
 
     processed_in_folder: dict[str, int] = {f: 0 for f in folder_totals}
     changed_folders: set[str] = set()
+    failed_folders: set[str] = set()
     current_root = ""
 
     def report(path):
@@ -85,9 +107,12 @@ def scan_folders(folders: List[str], progress_callback=None, cancel_event=None) 
             if row is not None and abs(row["modified_time"] - stat.st_mtime) < 1.0:
                 expected_thumbnail = thumbnail_path_for(path, THUMBNAIL_DIR)
                 if row["thumbnail_path"] != str(expected_thumbnail) or not expected_thumbnail.is_file():
-                    thumbnail_path, _, _ = generate_thumbnail(path, THUMBNAIL_DIR)
-                    if thumbnail_path is None:
-                        raise RuntimeError("Could not refresh thumbnail")
+                    if expected_thumbnail.is_file():
+                        thumbnail_path = str(expected_thumbnail)
+                    else:
+                        thumbnail_path, _, _ = generate_thumbnail(path, THUMBNAIL_DIR)
+                        if thumbnail_path is None:
+                            raise RuntimeError("Could not refresh thumbnail")
                     conn = get_connection()
                     try:
                         conn.execute(
@@ -141,6 +166,7 @@ def scan_folders(folders: List[str], progress_callback=None, cancel_event=None) 
 
         except Exception as e:
             errors += 1
+            failed_folders.add(current_root)
             print(f"Error processing {path}: {e}")
 
         processed_in_folder[current_root] += 1
@@ -149,7 +175,8 @@ def scan_folders(folders: List[str], progress_callback=None, cancel_event=None) 
     # A cancelled scan leaves folders unmarked; their status comes from the photos indexed so far.
     for folder in folder_totals:
         if not cancelled or folder in changed_folders:
-            mark_folder_indexed(folder, update_timestamp=folder in changed_folders, mark_complete=not cancelled)
+            mark_folder_indexed(folder, update_timestamp=folder in changed_folders,
+                                mark_complete=not cancelled and folder not in failed_folders)
 
     return {
         "added": added,
@@ -158,6 +185,7 @@ def scan_folders(folders: List[str], progress_callback=None, cancel_event=None) 
         "errors": errors,
         "total_found": len(all_paths),
         "cancelled": cancelled,
+        "folders_skipped": sum(os.path.normcase(os.path.abspath(folder)) in skipped_roots for folder in folders),
     }
 
 def extract_date_taken(path: Path) -> str | None:

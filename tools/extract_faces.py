@@ -7,11 +7,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.face_thumbnails import ensure_face_thumbnails
+from core.database import DB_PATH
 
 
 def extract_faces():
-    db_path = PROJECT_ROOT / "data" / "photo_search.db"
-    output_dir = Path("data/face_thumbnails")
+    db_path = DB_PATH
+    output_dir = DB_PATH.parent / "face_thumbnails"
     with closing(sqlite3.connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         face_ids = [row["id"] for row in conn.execute("SELECT id FROM faces")]

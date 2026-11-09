@@ -2,20 +2,32 @@ import os, sqlite3, json
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any
+from core.data_location import DEFAULT_DATA_DIR, load_data_directory
 
 # Database path
-DB_PATH = Path("data/photo_search.db")
+DB_PATH = load_data_directory() / "photo_search.db"
 
-def get_connection():
+def get_connection(path: Path | None = None):
     """Return a connection to the SQLite database."""
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    path = path if path is not None else DB_PATH
+    if path.parent == DEFAULT_DATA_DIR:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    elif not path.parent.is_dir():
+        raise FileNotFoundError(f"Data directory is unavailable: {path.parent}")
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row  # Makes rows accessible by column name
     return conn
 
-def init_db():
+def init_db(path: Path | None = None):
     """Create tables if they don't exist."""
-    conn = get_connection()
+    conn = get_connection(path)
+    try:
+        _init_db(conn)
+    finally:
+        conn.close()
+
+
+def _init_db(conn):
     cursor = conn.cursor()
 
     # Photos table
@@ -100,8 +112,39 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_faces_person ON faces(person_id)")
 
     conn.commit()
-    conn.close()
     print("Database initialized.")
+
+
+def prepare_database(directory: Path) -> None:
+    """Validate an existing index or initialize a new one without selecting it."""
+    if not directory.is_dir():
+        raise ValueError(f"Data directory does not exist: {directory}")
+    path = directory / "photo_search.db"
+    if path.exists():
+        if not path.is_file() or path.stat().st_size == 0:
+            raise ValueError(f"Database is empty or not a file: {path}")
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            result = conn.execute("PRAGMA quick_check").fetchall()
+            if result != [("ok",)]:
+                raise ValueError(f"Database integrity check failed: {result}")
+            tables = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )}
+            if not {"photos", "faces", "people", "folders"}.issubset(tables):
+                raise ValueError("The selected database is not a Photo Search index")
+        finally:
+            conn.close()
+    init_db(path)
+
+
+def resolve_thumbnail_path(path: str | None) -> str | None:
+    if path is None:
+        return None
+    thumbnail = Path(path)
+    if thumbnail.parent.name == "thumbnails":
+        return str(DB_PATH.parent / "thumbnails" / thumbnail.name)
+    return path
 
 # --- Helper functions ---
 
@@ -179,6 +222,7 @@ def delete_all_photos():
     cursor.execute("DELETE FROM photos")
     cursor.execute("DELETE FROM people")
     cursor.execute("DELETE FROM settings")
+    cursor.execute("UPDATE folders SET indexed = 0, indexed_at = NULL, total_files = NULL")
     conn.commit()
     conn.close()
 
@@ -258,7 +302,7 @@ def get_face_photo_details(face_ids: list[int]) -> dict[int, tuple[str, str | No
                 f"WHERE f.id IN ({placeholders})",
                 batch,
             )
-            paths.update((row["id"], (row["path"], row["thumbnail_path"])) for row in rows)
+            paths.update((row["id"], (row["path"], resolve_thumbnail_path(row["thumbnail_path"]))) for row in rows)
         return paths
     finally:
         conn.close()
@@ -524,7 +568,7 @@ NEGATION_WORDS = {"without", "excluding", "exclude", "except", "not", "no", "min
 
 
 def search_people_query(query: str) -> dict | None:
-    """Find saved names inside a free-text query and return matching photos.
+    """Find saved names or individual name parts in a free-text query.
 
     Returns None when no saved name appears in the query. Otherwise returns a dict with
     photo_ids (photos containing every named person, and enough faces for a "group"
@@ -540,17 +584,31 @@ def search_people_query(query: str) -> dict | None:
             key = row["name"].strip().casefold()
             if key:
                 by_name.setdefault(key, []).append(row["id"])
+        by_term = {name: set(ids) for name, ids in by_name.items()}
+        reserved = GROUP_WORDS | FILLER_WORDS | ONLY_WORDS | NEGATION_WORDS
+        for name, ids in by_name.items():
+            parts = name.split()
+            if len(parts) > 1:
+                for part in parts:
+                    if part not in reserved:
+                        by_term.setdefault(part, set()).update(ids)
 
-        remaining = query.casefold()
         matched: list[list[int]] = []
         names: list[str] = []
-        for key in sorted(by_name, key=len, reverse=True):
-            pattern = r"(?<!\w)" + re.escape(key) + r"(?!\w)"
-            if re.search(pattern, remaining):
-                token = f" zzperson{len(matched)} "
-                matched.append(by_name[key])
-                names.append(key)
-                remaining = re.sub(pattern, token, remaining)
+        if not by_term:
+            return None
+        pattern = r"(?<!\w)(?:" + "|".join(
+            re.escape(term) for term in sorted(by_term, key=len, reverse=True)
+        ) + r")(?!\w)"
+
+        def replace_name(match):
+            term = match.group()
+            token = f" zzperson{len(matched)} "
+            matched.append(sorted(by_term[term]))
+            names.append(term)
+            return token
+
+        remaining = re.sub(pattern, replace_name, query.casefold())
         if not matched:
             return None
 
@@ -682,10 +740,10 @@ def mark_folder_indexed(path: str, *, update_timestamp: bool = True, mark_comple
     conn.close()
 
 def set_folder_total(path: str, total: int):
-    """Record how many image files a folder contained when it was last scanned."""
+    """Record the scan total and mark the new scan incomplete until it finishes."""
     conn = get_connection()
     try:
-        conn.execute("UPDATE folders SET total_files = ? WHERE path = ?", (total, path))
+        conn.execute("UPDATE folders SET total_files = ?, indexed = 0 WHERE path = ?", (total, path))
         conn.commit()
     finally:
         conn.close()
@@ -694,13 +752,14 @@ def set_folder_total(path: str, total: int):
 def get_folder_progress(path: str) -> dict:
     """Return indexing state, file counts and the last change timestamp."""
     prefix = str(Path(path)).rstrip("\\/") + os.sep
+    prefix_end = prefix[:-1] + chr(ord(prefix[-1]) + 1)
     conn = get_connection()
     try:
         row = conn.execute(
             "SELECT indexed, total_files, indexed_at FROM folders WHERE path = ?", (path,)
         ).fetchone()
         indexed = conn.execute(
-            "SELECT COUNT(*) FROM photos WHERE substr(path, 1, ?) = ?", (len(prefix), prefix)
+            "SELECT COUNT(*) FROM photos WHERE path >= ? AND path < ?", (prefix, prefix_end)
         ).fetchone()[0]
     finally:
         conn.close()
@@ -713,7 +772,8 @@ def get_folder_progress(path: str) -> dict:
     else:
         state = "complete" if indexed >= total else "partial"
     return {"state": state, "indexed": indexed, "total": total if total is not None else indexed,
-            "indexed_at": row["indexed_at"] if row else None}
+            "indexed_at": row["indexed_at"] if row else None,
+            "scan_completed": bool(row and row["indexed"])}
 
 
 def get_search_photo_details(photo_ids: list[int]) -> dict[int, tuple[str, str | None, str | None]]:
@@ -728,7 +788,7 @@ def get_search_photo_details(photo_ids: list[int]) -> dict[int, tuple[str, str |
                 f"SELECT id, path, thumbnail_path, date_taken FROM photos WHERE id IN ({placeholders})",
                 batch,
             )
-            details.update((row["id"], (row["path"], row["thumbnail_path"], row["date_taken"])) for row in rows)
+            details.update((row["id"], (row["path"], resolve_thumbnail_path(row["thumbnail_path"]), row["date_taken"])) for row in rows)
         return details
     finally:
         conn.close()

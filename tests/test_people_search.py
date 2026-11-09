@@ -81,6 +81,56 @@ class PeopleSearchTests(unittest.TestCase):
         self.assertIsNone(database.search_people_query("sunset over the beach"))
         self.assertIsNone(database.search_people_query("Andreinov"))
 
+    def test_partial_names_match_all_people_and_full_names_remain_specific(self):
+        names = ("Alex Smith", "Alex Jones", "Alex", "Taylor Smith", "Alexandra Smith")
+        photos = []
+        for cluster, name in enumerate(names):
+            photo = self.photo(f"{cluster}.jpg")
+            self.face(photo, cluster)
+            database.assign_name_to_cluster(cluster, name)
+            photos.append(photo)
+
+        search = database.search_people_query
+        self.assertEqual(set(search("alex")["photo_ids"]), set(photos[:3]))
+        self.assertEqual(set(search("SMITH")["photo_ids"]), {photos[0], photos[3], photos[4]})
+        self.assertEqual(search("alex smith")["photo_ids"], [photos[0]])
+        self.assertEqual(search("Alex Smith at the beach")["remaining_text"], "at beach")
+        self.assertEqual(set(search("party with Alex")["photo_ids"]), set(photos[:3]))
+        self.assertEqual(search("party with Alex")["remaining_text"], "party")
+        self.assertIsNone(search("alexander"))
+
+    def test_partial_name_filters_and_multiple_people(self):
+        first, second, pair, pair2 = (self.photo(n) for n in ("first", "second", "pair", "pair2"))
+        for photo, cluster in ((first, 0), (second, 1), (pair, 0), (pair, 2), (pair2, 1), (pair2, 2)):
+            self.face(photo, cluster)
+        database.assign_name_to_cluster(0, "Alex Smith")
+        database.assign_name_to_cluster(1, "Alex Jones")
+        database.assign_name_to_cluster(2, "Blair Reed")
+        search = database.search_people_query
+        self.assertEqual(set(search("Alex and Blair")["photo_ids"]), {pair, pair2})
+        self.assertEqual(set(search("Alex without Blair")["photo_ids"]), {first, second})
+        self.assertEqual(set(search("Blair without Alex")["photo_ids"]), set())
+        self.assertEqual(set(search("only Alex")["photo_ids"]), {first, second})
+        self.assertEqual(search("Alex Smith and Blair")["photo_ids"], [pair])
+
+    def test_partial_name_does_not_consume_search_grammar(self):
+        photo = self.photo("one")
+        self.face(photo, 0)
+        database.assign_name_to_cluster(0, "Alex Group")
+        search = database.search_people_query
+        self.assertIsNone(search("group photo"))
+        self.assertEqual(search("Alex Group")["photo_ids"], [photo])
+        self.assertEqual(search("group photo with Alex")["photo_ids"], [])
+
+    def test_partial_names_support_unicode_and_middle_names(self):
+        photo = self.photo("photo")
+        self.face(photo, 0)
+        database.assign_name_to_cluster(0, "Renée Marie O'Neil")
+        for term in ("RENÉE", "marie", "o'neil", "renée marie o'neil"):
+            with self.subTest(term=term):
+                self.assertEqual(database.search_people_query(term)["photo_ids"], [photo])
+        self.assertIsNone(database.search_people_query("ren"))
+
     def test_only_and_exclusion_wording(self):
         pair, crowd, solo, stranger, inna_solo = (
             self.photo(n) for n in ("pair", "crowd", "solo", "stranger", "inna_solo")
@@ -171,10 +221,10 @@ class PeopleSearchTests(unittest.TestCase):
         ui.page.side_effect = lambda _: lambda func: func
         ui.input.return_value.classes.return_value = ui.input.return_value
         ui.input.return_value.on.return_value = ui.input.return_value
-        ui.input.return_value.value = "Alex"
+        ui.input.return_value.value = "Alex Smith"
         ui.input.return_value.props.return_value = ui.input.return_value
         ui.input.return_value.classes.return_value = ui.input.return_value
-        ui.input.return_value.value = "Alex"
+        ui.input.return_value.value = "Alex Smith"
         ui.checkbox.return_value.value = False
         nicegui = ModuleType("nicegui")
         nicegui.ui = ui
@@ -216,6 +266,7 @@ class PeopleSearchTests(unittest.TestCase):
         save = next(call.kwargs["on_click"] for call in ui.button.call_args_list if call.args and call.args[0] == "Name whole group")
         globals_["open_name_people"] = MagicMock()
         save()
+        ui.input.return_value.value = "Alex"
         ui.button.reset_mock()
         namespace["main_page"]()
         search = next(call.kwargs["on_click"] for call in ui.button.call_args_list if call.args and call.args[0] == "Search")
@@ -228,6 +279,13 @@ class PeopleSearchTests(unittest.TestCase):
         globals_["open_photo_preview"] = MagicMock()
         preview()
         globals_["open_photo_preview"].assert_called_once_with("first.jpg")
+        ui.input.return_value.value = "party with Alex"
+        clip.search_photos.return_value = [(photo, 0.9)]
+        asyncio.run(search())
+        clip.search_photos.assert_called_once_with("party", top_k=1_000_000, min_score=-1.0)
+        self.assertTrue(any("Found 1 results" in str(call) for call in ui.label.call_args_list))
+        clip.search_photos.reset_mock()
+        clip.search_photos.return_value = []
         ui.input.return_value.value = "beach sunset"
         asyncio.run(search())
         clip.search_photos.assert_called_once_with("beach sunset", top_k=30, min_score=0.22)

@@ -2,6 +2,7 @@ import json
 import itertools
 import io
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from core import startup
@@ -62,22 +63,109 @@ class StartupTests(unittest.TestCase):
 
     def test_splash_has_no_title_bar_and_error_can_be_dismissed(self):
         root = MagicMock()
-        frame = MagicMock()
+        canvas = MagicMock()
         close_button = MagicMock()
         with patch.object(startup_splash.tk, "Tk", return_value=root), \
-             patch.object(startup_splash.tk, "Frame", return_value=frame), \
-             patch.object(startup_splash.tk, "Label"), \
+             patch.object(startup_splash.tk, "Canvas", return_value=canvas), \
              patch.object(startup_splash.tk, "Button", return_value=close_button) as button, \
-             patch.object(startup_splash.ttk, "Progressbar"), \
+             patch.object(startup_splash, "load_logo") as logo, \
              patch.object(startup_splash.sys, "stdin", io.StringIO('{"kind":"error","text":"failed"}\n')), \
              patch.object(startup_splash.threading, "Thread") as thread:
             thread.side_effect = lambda target, daemon: MagicMock(start=target)
             startup_splash.main()
             root.overrideredirect.assert_called_once_with(True)
-            button.assert_called_once_with(frame, text="Close", command=root.destroy)
+            logo.assert_called_once_with(root)
+            canvas.create_image.assert_called_once_with(39, 39, image=logo.return_value, anchor="nw")
+            canvas.create_text.assert_any_call(
+                560, 46, text=f"v{startup_splash.APP_VERSION}", fill="#a5c4ca",
+                font=("Segoe UI", 10), anchor="ne"
+            )
+            canvas.create_line.assert_any_call(
+                45, 116, 555, 116, fill="#385460", width=8, capstyle="round"
+            )
+            self.assertFalse(any(call.kwargs.get("text") == "STARTING PHOTO SEARCH"
+                                 for call in canvas.create_text.call_args_list))
+            self.assertEqual(button.call_args.args[0], root)
+            self.assertEqual(button.call_args.kwargs["command"], root.destroy)
             update = root.after.call_args.args[1]
             update()
-            close_button.pack.assert_called_once()
+            close_button.place.assert_called_once()
+            canvas.itemconfigure.assert_any_call(
+                canvas.create_text.return_value, text="STARTUP FAILED", fill="#ffb5af"
+            )
+            canvas.itemconfigure.assert_any_call(
+                canvas.create_text.return_value, text="Could not start Photo Search.\nfailed", fill="#ffd1cc"
+            )
+
+    def test_splash_preserves_status_highlights_and_animates_until_failure(self):
+        root, canvas = MagicMock(), MagicMock()
+        messages = ('{"kind":"status","text":"Database initialized."}\n'
+                    '{"kind":"status","text":"Using CPU"}\n'
+                    '{"kind":"status","text":"Loading image search model..."}\n')
+        with patch.object(startup_splash.tk, "Tk", return_value=root), \
+             patch.object(startup_splash.tk, "Canvas", return_value=canvas), \
+             patch.object(startup_splash.tk, "Button"), \
+             patch.object(startup_splash, "load_logo"), \
+             patch.object(startup_splash.sys, "stdin", io.StringIO(messages)), \
+             patch.object(startup_splash.threading, "Thread") as thread:
+            thread.side_effect = lambda target, daemon: MagicMock(start=target)
+            startup_splash.main()
+            animate, update = [call.args[1] for call in root.after.call_args_list[:2]]
+            animate()
+            canvas.coords.assert_called()
+            update()
+            canvas.itemconfigure.assert_any_call(
+                canvas.create_text.return_value,
+                text="Database initialized.\nUsing CPU\nLoading image search model...",
+            )
+            canvas.itemconfigure.assert_any_call(
+                canvas.create_text.return_value,
+                text="Could not start Photo Search.\nThe application stopped before startup completed.",
+                fill="#ffd1cc",
+            )
+            canvas.coords.reset_mock()
+            animate()
+            canvas.coords.assert_not_called()
+
+    def test_splash_closes_on_close_message(self):
+        root = MagicMock()
+        with patch.object(startup_splash.tk, "Tk", return_value=root), \
+             patch.object(startup_splash.tk, "Canvas"), \
+             patch.object(startup_splash.tk, "Button"), \
+             patch.object(startup_splash, "load_logo"), \
+             patch.object(startup_splash.sys, "stdin", io.StringIO('{"kind":"close"}\n')), \
+             patch.object(startup_splash.threading, "Thread") as thread:
+            thread.side_effect = lambda target, daemon: MagicMock(start=target)
+            startup_splash.main()
+            update = root.after.call_args.args[1]
+            update()
+            root.destroy.assert_called_once()
+
+    def test_logo_loads_project_image_independent_of_working_directory(self):
+        from PIL import ImageTk
+        with patch.object(ImageTk, "PhotoImage") as image:
+            root = MagicMock()
+            logo = startup_splash.load_logo(root)
+            self.assertEqual(startup_splash.LOGO_PATH, Path(__file__).resolve().parents[1] / "images" / "photo_search.jpg")
+            self.assertEqual(image.call_args.args[0].size, (42, 42))
+            self.assertEqual(image.call_args.kwargs["master"], root)
+            self.assertIs(logo, image.return_value)
+
+    def test_missing_logo_is_reported_without_preventing_splash(self):
+        root = MagicMock()
+        with patch.object(startup_splash.tk, "Tk", return_value=root), \
+             patch.object(startup_splash.tk, "Canvas") as canvas, \
+             patch.object(startup_splash.tk, "Button"), \
+             patch.object(startup_splash, "load_logo", side_effect=OSError("missing")), \
+             patch.object(startup_splash.sys, "stderr", new_callable=io.StringIO) as stderr, \
+             patch.object(startup_splash.sys, "stdin", io.StringIO('{"kind":"close"}\n')), \
+             patch.object(startup_splash.threading, "Thread") as thread:
+            thread.side_effect = lambda target, daemon: MagicMock(start=target)
+            startup_splash.main()
+            self.assertIn("Could not load splash image", stderr.getvalue())
+            canvas.return_value.create_image.assert_not_called()
+            root.after.call_args.args[1]()
+            root.destroy.assert_called_once()
 
 
 if __name__ == "__main__":

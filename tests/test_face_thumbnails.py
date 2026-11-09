@@ -780,8 +780,13 @@ class FaceThumbnailTests(unittest.TestCase):
             self.assertEqual(len(database.get_clusters()), 1)
             self.assertFalse(any(call.args and call.args[0] == "Delete faces"
                                  for call in self.ui.button.call_args_list))
+            switches = {}
+            def make_switch(label, **kwargs):
+                switches[label] = MagicMock()
+                return switches[label]
+            self.ui.switch.side_effect = make_switch
             self.open_name_people.__globals__["open_settings"]()
-            self.ui.switch.return_value.on_value_change.call_args.args[0](SimpleNamespace(value=False))
+            switches["Skip Delete Group Confirmation"].on_value_change.call_args.args[0](SimpleNamespace(value=False))
             self.assertFalse(database.load_setting("skip_delete_group_confirmation"))
             self.ui.button.reset_mock()
             self.open_name_people()

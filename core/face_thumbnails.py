@@ -6,10 +6,10 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
-from core.database import get_connection
+from core.database import get_connection, DB_PATH
 
 
-FACE_THUMBNAIL_DIR = Path("data/face_thumbnails")
+FACE_THUMBNAIL_DIR = DB_PATH.parent / "face_thumbnails"
 
 
 def delete_face_thumbnails(face_ids: list[int]) -> list[str]:
