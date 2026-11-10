@@ -322,6 +322,31 @@ class PeopleSearchTests(unittest.TestCase):
         self.assertEqual(ui.image.call_count, 25)
         self.assertEqual(ui.image.call_args_list[-1].args[0], "thumb504.jpg")
 
+        conn = database.get_connection()
+        try:
+            conn.execute("UPDATE photos SET date_taken = ? WHERE id = ?",
+                         ("2026-06-15T12:00:00", photo))
+            conn.commit()
+        finally:
+            conn.close()
+        globals_["search_people_query"] = database.search_people_query
+        clip.search_photos.reset_mock()
+        ui.input.return_value.value = "Alex in 2026"
+        asyncio.run(search())
+        clip.search_photos.assert_not_called()
+        self.assertTrue(any("Found 1 results" in str(call) for call in ui.label.call_args_list))
+
+        ui.input.return_value.value = "in 2026"
+        asyncio.run(search())
+        clip.search_photos.assert_not_called()
+        self.assertTrue(any("Found 1 results" in str(call) for call in ui.label.call_args_list))
+
+        clip.search_photos.return_value = [(photo, 0.9)]
+        ui.input.return_value.value = "party with Alex in 2026"
+        asyncio.run(search())
+        clip.search_photos.assert_called_once_with("party", top_k=1_000_000, min_score=-1.0)
+        self.assertTrue(any("Found 1 results" in str(call) for call in ui.label.call_args_list))
+
         async def test_repeated_search():
             started = asyncio.Event()
             release = asyncio.Event()

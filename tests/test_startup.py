@@ -95,7 +95,7 @@ class StartupTests(unittest.TestCase):
             canvas.create_image.assert_called_once_with(39, 39, image=logo.return_value, anchor="nw")
             canvas.create_text.assert_any_call(
                 560, 46, text=f"v{startup_splash.APP_VERSION}", fill="#a5c4ca",
-                font=("Segoe UI", 10), anchor="ne"
+                font=("Segoe UI", 12), anchor="ne"
             )
             canvas.create_line.assert_any_call(
                 45, 116, 555, 116, fill="#385460", width=8, capstyle="round"

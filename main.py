@@ -38,8 +38,9 @@ from pathlib import Path
 startup.report("Initializing database...")
 from core import database, face_thumbnails
 from core.data_location import save_data_directory
-from core.database import add_folder as add_folder_db, get_folder_progress, get_folders, init_db, get_photo_count, delete_all_photos, save_setting, load_setting, get_connection, get_clusters, get_people_names, suggest_group_names, assign_name_to_cluster, assign_selected_faces, delete_face_group, delete_selected_faces, rename_person, find_photos_by_person_name, search_people_query
+from core.database import add_folder as add_folder_db, get_folder_progress, get_folders, init_db, get_photo_count, delete_all_photos, save_setting, load_setting, get_connection, get_clusters, get_people_names, suggest_group_names, assign_name_to_cluster, assign_selected_faces, delete_face_group, delete_selected_faces, rename_person, find_photos_by_person_name, search_people_query, get_photo_ids_by_date
 from core.database import format_folder_status, get_face_photo_details, get_search_photo_details
+from core.search_dates import parse_date_search
 init_db()
 startup.report("Database initialized.")
 startup.report("Loading image search model...")
@@ -1383,15 +1384,26 @@ def main_page():
         search_running = False
 
         def find_search_results(query):
-            people_query = search_people_query(query)
+            date_query = parse_date_search(query)
+            people_query = search_people_query(date_query.remaining_text)
+            date_photo_ids = None
+            if date_query.has_filter:
+                date_photo_ids = get_photo_ids_by_date(date_query.start, date_query.end)
+
             if people_query is None:
-                results = search_photos(query, top_k=30, min_score=0.22)
+                if date_query.has_filter and not date_query.remaining_text:
+                    results = [(photo_id, None) for photo_id in date_photo_ids]
+                else:
+                    results = search_photos(date_query.remaining_text, top_k=30, min_score=0.22)
             elif people_query["remaining_text"]:
                 scores = dict(search_photos(people_query["remaining_text"], top_k=1_000_000, min_score=-1.0))
                 matched = [(pid, scores.get(pid)) for pid in people_query["photo_ids"]]
                 results = sorted(matched, key=lambda item: (item[1] is None, -(item[1] or 0)))
             else:
                 results = [(photo_id, None) for photo_id in people_query["photo_ids"]]
+            if date_photo_ids is not None:
+                matching_dates = set(date_photo_ids)
+                results = [result for result in results if result[0] in matching_dates]
             return results, get_search_photo_details([photo_id for photo_id, _ in results])
 
         async def do_search():

@@ -55,7 +55,7 @@ def main():
     canvas.create_text(103, 78, text="YOUR PHOTO LIBRARY, READY TO EXPLORE",
                        fill="#a5c4ca", font=("Segoe UI", 9), anchor="nw")
     canvas.create_text(560, 46, text=f"v{APP_VERSION}", fill="#a5c4ca",
-                       font=("Segoe UI", 10), anchor="ne")
+                       font=("Segoe UI", 12), anchor="ne")
     canvas.create_line(45, PROGRESS_Y, 555, PROGRESS_Y, fill="#385460", width=8, capstyle="round")
     progress = canvas.create_line(45, PROGRESS_Y, 45, PROGRESS_Y, fill="#75ded5", width=8, capstyle="round")
     heading = canvas.create_text(40, 135, text="GETTING THINGS READY", fill="#78d3cd",
