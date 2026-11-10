@@ -39,8 +39,8 @@ When run from source, the application stores its SQLite index, settings, and gen
 
 Choose the **CPU** installer for any supported PC, or the **GPU** installer for an NVIDIA GPU with a compatible driver. Each installer is a single executable for 64-bit Windows 10 version 1809 or later; Python is not required on the target PC. The GPU build uses CUDA 12.4 PyTorch and CUDA 12 ONNX Runtime. If the driver or GPU is incompatible, processing may fall back to the CPU. Microsoft Edge WebView2 Runtime is required for the native window.
 
-- [Download the CPU installer](https://pub-5c62851ff87d40acaeee8eb31d082ac7.r2.dev/v0.2/PhotoSearch-0.2-CPU-Setup.exe)
-- [Download the NVIDIA GPU installer](https://pub-5c62851ff87d40acaeee8eb31d082ac7.r2.dev/v0.2/PhotoSearch-0.2-GPU-Setup.exe)
+- [Download the CPU installer (v0.3)](https://pub-5c62851ff87d40acaeee8eb31d082ac7.r2.dev/v0.3/PhotoSearch-0.3-CPU-Setup.exe)
+- [Download the NVIDIA GPU installer (v0.3)](https://pub-5c62851ff87d40acaeee8eb31d082ac7.r2.dev/v0.3/PhotoSearch-0.3-GPU-Setup.exe)
 
 The installers do not contain a photo index, thumbnails, or AI model weights. On first startup, an internet connection and additional disk space are needed to download the OpenCLIP and InsightFace models. Startup can take several minutes. InsightFace stores its model under `%USERPROFILE%\.insightface`; OpenCLIP uses the Hugging Face cache. These caches may be shared with other applications. Review the [InsightFace model license](https://github.com/deepinsight/insightface/tree/master/python-package#license): its pretrained models are for **non-commercial research only**, including when automatically downloaded.
 
