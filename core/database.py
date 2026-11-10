@@ -1,6 +1,6 @@
 import os, sqlite3, json
 from pathlib import Path
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional, List, Dict, Any
 from core.data_location import DEFAULT_DATA_DIR, load_data_directory
 
@@ -213,6 +213,31 @@ def get_photo_count() -> int:
     count = cursor.fetchone()[0]
     conn.close()
     return count
+
+
+def get_photo_ids_by_date(start: date | None, end: date | None) -> list[int]:
+    """Return photos in the half-open capture-date interval [start, end)."""
+    if start is None and end is None:
+        raise ValueError("At least one capture-date bound is required")
+    clauses = ["date_taken IS NOT NULL"]
+    params = []
+    if start is not None:
+        clauses.append("date(date_taken) >= ?")
+        params.append(start.isoformat())
+    if end is not None:
+        clauses.append("date(date_taken) < ?")
+        params.append(end.isoformat())
+
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            f"SELECT id FROM photos WHERE {' AND '.join(clauses)} "
+            "ORDER BY date_taken DESC, id",
+            params,
+        ).fetchall()
+        return [row["id"] for row in rows]
+    finally:
+        conn.close()
 
 def delete_all_photos():
     """Delete everything from the database."""

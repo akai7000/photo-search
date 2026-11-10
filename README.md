@@ -5,7 +5,7 @@ Photo Search is a Windows desktop application for indexing and searching a perso
 ## Features
 
 - Add photo folders and index new or changed images, with progress and cancellation.
-- Search using a visual description, saved people's names, or a combination of both.
+- Search using a visual description, saved people's names, capture dates, or a combination.
 - Group detected faces, name whole groups or selected faces, and merge matching names.
 - Review paginated face groups, preview the original photo and its folder, and delete face detections without deleting photos.
 - View paginated search results as thumbnails and open a larger, orientation-corrected preview.
@@ -92,6 +92,7 @@ InsightFace declares the CPU `onnxruntime` package as a dependency, so `pip chec
 Search and face grouping are based on machine-learning models, so matches and group suggestions should be reviewed before naming or deleting detections.
 In a search result's photo preview, select the folder path to open File Explorer with the original photo selected.
 Search accepts a full saved name or an individual first, middle, or last name. A name part matches all saved people with that part; a full name is more specific. Ordinary search words such as "group" are not treated as partial names.
+Search can also filter by capture date using prompts such as `John in 2026`, `Jane before Feb 2020`, `Lara last year`, or `Ming after 10/01/2013`. “Last year” means the previous calendar year. Numeric dates use month/day/year. Date filters use the photo's EXIF capture date; photos without that metadata are excluded from date-filtered results.
 Unnamed groups appear first, with suggested matches at the top; within each set, groups with more faces appear first.
 The **Indexed on** date is displayed in local time and changes only when a scan adds or updates a photo in that folder, including during a cancelled scan. Scans that skip all photos do not change the date.
 Removing a searchable folder requires confirmation and removes its indexed photos, faces and generated thumbnails. Photos covered by another searchable folder remain indexed. Original files and saved people are not deleted.
