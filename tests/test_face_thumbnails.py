@@ -7,8 +7,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import cv2
-from PIL import Image
+from PIL import Image, ImageOps
 
 from core import database
 
@@ -86,10 +85,10 @@ class FaceThumbnailTests(unittest.TestCase):
         exif = image.getexif()
         exif[274] = 6
         image.save(source, exif=exif)
-        # OpenCV reads the EXIF-corrected image; red is now at the top right.
-        decoded = cv2.imread(str(source))
-        self.assertEqual(decoded.shape[:2], (80, 40))
-        self.assertGreater(int(decoded[10, 30, 2]), 180)
+        with Image.open(source) as original:
+            decoded = ImageOps.exif_transpose(original)
+            self.assertEqual(decoded.size, (40, 80))
+            self.assertGreater(decoded.getpixel((30, 10))[0], 180)
         face_id = self.insert_face(source, (20, 0, 40, 40))
 
         with patch("core.face_thumbnails.FACE_THUMBNAIL_DIR", self.root / "faces"):
@@ -276,8 +275,7 @@ class FaceThumbnailTests(unittest.TestCase):
             self.assertEqual(len(database.get_clusters()), 21)
             self.assertEqual(self.ui.input.call_args_list[-20].kwargs["value"], "Other draft")
             self.assertTrue(any(call.kwargs["value"]
-                                for call in self.ui.checkbox.call_args_list[previous_checkboxes:]
-                                if call.args and call.args[0] == "Select"))
+                                for call in self.ui.checkbox.call_args_list[previous_checkboxes:]))
             self.assertIn("Alice", self.ui.input.call_args_list[-20].kwargs["autocomplete"])
 
     def test_naming_opens_next_unnamed_group_according_to_setting(self):
@@ -516,7 +514,7 @@ class FaceThumbnailTests(unittest.TestCase):
         self.ui.element.return_value = overlay
         with patch("core.face_thumbnails.FACE_THUMBNAIL_DIR", self.root / "faces"):
             self.open_name_people()
-            overlay.classes.assert_called_with(
+            overlay.classes.assert_any_call(
                 "absolute inset-0 flex items-center justify-center z-10 bg-black/40"
             )
             overlay.props.assert_called_with('role="status" aria-label="Updating groups"')
@@ -883,6 +881,16 @@ class FaceThumbnailTests(unittest.TestCase):
             return control
 
         self.ui.checkbox.side_effect = checkbox
+        labels = []
+
+        def label(*args, **kwargs):
+            control = MagicMock()
+            control.classes.return_value = control
+            control.on.return_value = control
+            labels.append((args, control))
+            return control
+
+        self.ui.label.side_effect = label
         with patch("core.face_thumbnails.FACE_THUMBNAIL_DIR", self.root / "faces"):
             self.open_name_people()
             # Only the first 24 in the large group plus the existing person's face.
@@ -893,6 +901,28 @@ class FaceThumbnailTests(unittest.TestCase):
                        for call in reversed(self.ui.button.call_args_list) if call.args}
             page_buttons = {call.kwargs["icon"]: call.kwargs["on_click"]
                             for call in self.ui.button.call_args_list if "icon" in call.kwargs}
+            selection_link = next(
+                control for args, control in labels if args == ("Select all on page",)
+            )
+            page_selection_call = next(
+                call for call in selection_link.on.call_args_list
+                if call.args[0] == "click"
+            )
+            page_selection = page_selection_call.args[1]
+            self.assertTrue(all(not call.args for call in self.ui.checkbox.call_args_list))
+            self.assertTrue(all(
+                control.classes.call_args.args[0] ==
+                "face-selection-checkbox absolute top-0 right-0 z-10 m-0 p-0 rounded bg-grey-9/80"
+                for control in controls[:24]
+            ))
+            self.assertTrue(all(
+                control.style.call_args.args[0] == "margin: 0; padding: 0"
+                for control in controls[:24]
+            ))
+            self.assertTrue(all(
+                control.props.call_args.args[0].startswith("dense ")
+                for control in controls[:24]
+            ))
             self.assertIn("Alice", self.ui.input.call_args_list[0].kwargs["autocomplete"])
             self.assertIn("Alice", [call.args[0] for call in self.ui.menu_item.call_args_list])
             self.ui.input.return_value.value = "Alice"
@@ -900,21 +930,27 @@ class FaceThumbnailTests(unittest.TestCase):
                               if call.args and call.args[0] == f"Select all {len(ids)}")
             select_all()
             self.assertTrue(all(control.value for control in controls[:24]))
+            self.assertEqual(selection_link.set_text.call_args.args[0], "Deselect all on page")
             buttons["Deselect all"]()
             self.assertTrue(all(not control.value for control in controls[:24]))
-            buttons["Select all on page"]()
+            page_selection()
             self.assertTrue(all(control.value for control in controls[:24]))
-            buttons["Deselect all on page"]()
+            self.assertEqual(selection_link.set_text.call_args.args[0], "Deselect all on page")
+            page_selection()
             self.assertTrue(all(not control.value for control in controls[:24]))
-            buttons["Select all on page"]()
+            self.assertEqual(selection_link.set_text.call_args.args[0], "Select all on page")
+            page_selection()
             page_buttons["arrow_forward"]()
             self.assertEqual(self.ui.image.call_count, 26)
             page_two = controls[-1:]
             self.assertTrue(all(not control.value for control in page_two))
-            buttons["Select all on page"]()
+            page_selection()
+            self.assertEqual(selection_link.set_text.call_args.args[0], "Deselect all on page")
             page_buttons["arrow_back"]()
             self.assertTrue(all(control.value for control in controls[-24:]))
-            buttons["Deselect all on page"]()
+            self.assertEqual(selection_link.set_text.call_args.args[0], "Deselect all on page")
+            page_selection()
+            self.assertEqual(selection_link.set_text.call_args.args[0], "Select all on page")
             self.open_name_people.__globals__["open_name_people"] = MagicMock()
             buttons["Name whole group"]()
             conn = database.get_connection()

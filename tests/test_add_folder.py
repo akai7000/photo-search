@@ -493,13 +493,26 @@ class AddFolderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_header_places_photo_count_after_left_aligned_buttons(self):
         self.main_page()
-        self.ui.header.return_value.classes.assert_called_once_with("items-center gap-2")
+        self.ui.header.return_value.classes.assert_called_once_with("app-header items-center gap-3 flex-wrap")
+        theme_css = self.ui.add_css.call_args.args[0]
+        self.assertIn("@layer theme", theme_css)
+        self.assertIn(".q-dialog .bg-grey-9", theme_css)
+        self.assertIn(".text-primary:not(.bg-primary)", theme_css)
         self.ui.label.return_value.classes.assert_any_call("text-subtitle1 ml-auto")
         button_call = next(call for call in self.ui.method_calls
                            if call[0] == "button" and call.args and call.args[0] == "Settings")
         label_call = next(call for call in self.ui.method_calls
                           if call[0] == "label" and call.args and call.args[0] == "0 photos indexed")
         self.assertLess(self.ui.method_calls.index(button_call), self.ui.method_calls.index(label_call))
+
+    async def test_theme_uses_halved_corner_radii(self):
+        self.main_page()
+        css = self.ui.add_css.call_args.args[0]
+        self.assertRegex(css, r"\.q-card\s*\{[^}]*border-radius:\s*7px;")
+        self.assertRegex(css, r"\.folder-expansion\s*\{[^}]*border-radius:\s*7px;")
+        self.assertRegex(css, r"\.q-btn\s*\{[^}]*border-radius:\s*4\.5px;")
+        self.assertRegex(css, r"\.rounded,[^}]*border-radius:\s*2px;")
+        self.assertRegex(css, r"\.q-checkbox__bg\s*\{[^}]*border-radius:\s*1px;")
 
     async def test_main_page_connects_splash_handoff_to_native_window(self):
         self.main_page()

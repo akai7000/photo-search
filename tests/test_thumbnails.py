@@ -145,6 +145,48 @@ class ThumbnailTests(unittest.TestCase):
                 "SELECT thumbnail_path FROM photos WHERE path = ?", (str(source),)
             ).fetchone()[0], expected)
 
+    def test_database_migration_forces_non_insightface_faces_to_be_reindexed(self):
+        source = self.photos / "photo.png"
+        self.make_photo(source)
+        database.add_folder(str(self.photos))
+        photo_id = database.insert_or_update_photo({
+            "path": str(source),
+            "modified_time": source.stat().st_mtime,
+            "thumbnail_path": str(self.root / "old.jpg"),
+        })
+        database.insert_face(photo_id, [1, 2, 20, 30], b"old embedding")
+        database.set_folder_total(str(self.photos), 1)
+        database.mark_folder_indexed(str(self.photos))
+        with closing(database.get_connection()) as conn:
+            conn.execute(
+                "ALTER TABLE photos ADD COLUMN face_backend TEXT NOT NULL DEFAULT 'insightface'"
+            )
+            conn.execute(
+                "UPDATE photos SET face_backend = 'alternate' WHERE id = ?", (photo_id,)
+            )
+            conn.commit()
+
+        database.init_db()
+
+        with patch.object(self.scanner, "detect_faces", return_value=[]) as detect:
+            result = self.scanner.scan_folders(
+                [str(self.photos)],
+                skip_indexed_folders=True,
+            )
+
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(result["folders_skipped"], 0)
+        detect.assert_called_once_with(source)
+        with closing(database.get_connection()) as conn:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(photos)")}
+            faces = conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0]
+            row = conn.execute(
+                "SELECT modified_time FROM photos WHERE id = ?", (photo_id,)
+            ).fetchone()
+        self.assertNotIn("face_backend", columns)
+        self.assertEqual(faces, 0)
+        self.assertEqual(row["modified_time"], source.stat().st_mtime)
+
     def test_cancel_stops_scan_and_leaves_folder_unmarked(self):
         import threading
         self.make_photo(self.photos / "a.png", 1)

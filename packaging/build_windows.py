@@ -12,6 +12,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def pyinstaller_assets(meanshape):
+    return [
+        "--add-data", f"{ROOT / 'images' / 'snowfoxninjalogo.png'};images",
+        "--add-data", f"{meanshape};objects",
+    ]
+
+
 def collect_notices(destination):
     destination.mkdir(parents=True, exist_ok=True)
     shutil.copy2(Path(sys.base_prefix) / "LICENSE.txt", destination / "Python-LICENSE.txt")
@@ -73,8 +80,7 @@ def main():
     subprocess.run([
         sys.executable, "-m", "PyInstaller", "--noconfirm", "--onedir", "--windowed",
         "--name", exe_name,
-        "--add-data", f"{ROOT / 'images' / 'photo_search.jpg'};images",
-        "--add-data", f"{meanshape};objects",
+        *pyinstaller_assets(meanshape),
         "--collect-data", "open_clip",
         "--copy-metadata", "nicegui",
         "--copy-metadata", "open_clip_torch",

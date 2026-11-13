@@ -6,7 +6,6 @@ insightface
 onnxruntime-gpu==1.22.0
 faiss-cpu
 pillow
-opencv-python-headless
 exifread
 numpy
 scikit-learn
