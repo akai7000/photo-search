@@ -64,6 +64,87 @@ class DataLocationTests(unittest.TestCase):
             self.assertEqual(database.get_folders(), ["photos"])
             self.assertEqual(database.load_setting("face_page_size"), 40)
 
+    def test_existing_photo_database_migrates_face_method_data(self):
+        path = self.root / "legacy.db"
+        with closing(sqlite3.connect(path)) as conn:
+            conn.execute("""
+                CREATE TABLE photos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    path TEXT UNIQUE NOT NULL,
+                    file_hash TEXT,
+                    file_size INTEGER,
+                    modified_time REAL,
+                    date_taken TEXT,
+                    width INTEGER,
+                    height INTEGER,
+                    thumbnail_path TEXT,
+                    indexed_at TEXT,
+                    clip_embedding BLOB,
+                    face_backend TEXT NOT NULL DEFAULT 'insightface'
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE people (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    created_at TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE faces (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    photo_id INTEGER NOT NULL,
+                    person_id INTEGER,
+                    cluster_id INTEGER,
+                    bbox_x REAL,
+                    bbox_y REAL,
+                    bbox_w REAL,
+                    bbox_h REAL,
+                    embedding BLOB
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE folders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    path TEXT UNIQUE NOT NULL,
+                    indexed INTEGER DEFAULT 0,
+                    indexed_at TEXT,
+                    total_files INTEGER
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)
+            """)
+            conn.execute(
+                "INSERT INTO photos (path, modified_time) VALUES ('current.jpg', 10)"
+            )
+            conn.execute(
+                "INSERT INTO photos (path, modified_time, face_backend) "
+                "VALUES ('legacy.jpg', 20, 'alternate')"
+            )
+            conn.execute("INSERT INTO people (name) VALUES ('Legacy name')")
+            conn.execute("INSERT INTO folders (path, indexed) VALUES ('photos', 1)")
+            conn.execute("INSERT INTO settings (key, value) VALUES ('face_backend', 'alternate')")
+            conn.execute("INSERT INTO faces (photo_id, person_id, embedding) VALUES (1, 1, X'01')")
+            conn.execute("INSERT INTO faces (photo_id, person_id, embedding) VALUES (2, 1, X'02')")
+            conn.commit()
+        database.init_db(path)
+        with closing(database.get_connection(path)) as conn:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(photos)")}
+            legacy_photo = conn.execute(
+                "SELECT modified_time FROM photos WHERE path = 'legacy.jpg'"
+            ).fetchone()
+            faces = conn.execute("SELECT photo_id FROM faces").fetchall()
+            folder = conn.execute("SELECT indexed FROM folders WHERE path = 'photos'").fetchone()
+            setting = conn.execute(
+                "SELECT value FROM settings WHERE key = 'face_backend'"
+            ).fetchone()
+        self.assertNotIn("face_backend", columns)
+        self.assertIsNone(legacy_photo["modified_time"])
+        self.assertEqual([row["photo_id"] for row in faces], [1])
+        self.assertEqual(folder["indexed"], 0)
+        self.assertIsNone(setting)
+
     def test_unavailable_selected_directory_is_not_recreated(self):
         missing = self.root / "missing" / "photo_search.db"
         with patch.object(database, "DB_PATH", missing):

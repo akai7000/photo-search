@@ -46,6 +46,8 @@ def _init_db(conn):
             clip_embedding BLOB
         )
     """)
+    photo_columns = {row["name"] for row in cursor.execute("PRAGMA table_info(photos)")}
+    remove_legacy_backend_column = "face_backend" in photo_columns
 
     # People table (named clusters)
     cursor.execute("""
@@ -104,6 +106,28 @@ def _init_db(conn):
     folder_columns = {row["name"] for row in cursor.execute("PRAGMA table_info(folders)")}
     if "total_files" not in folder_columns:
         cursor.execute("ALTER TABLE folders ADD COLUMN total_files INTEGER")
+
+    if remove_legacy_backend_column:
+        legacy_photos = cursor.execute(
+            "SELECT COUNT(*) FROM photos WHERE face_backend IS NOT 'insightface'"
+        ).fetchone()[0]
+        if legacy_photos:
+            cursor.execute(
+                "UPDATE photos SET modified_time = NULL "
+                "WHERE face_backend IS NOT 'insightface'"
+            )
+            cursor.execute(
+                "DELETE FROM faces WHERE photo_id IN "
+                "(SELECT id FROM photos WHERE face_backend IS NOT 'insightface')"
+            )
+            cursor.execute(
+                "DELETE FROM people WHERE NOT EXISTS "
+                "(SELECT 1 FROM faces WHERE faces.person_id = people.id)"
+            )
+            cursor.execute("UPDATE folders SET indexed = 0")
+        cursor.execute("ALTER TABLE photos DROP COLUMN face_backend")
+
+    cursor.execute("DELETE FROM settings WHERE key = 'face_backend'")
 
     # Indexes for performance
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_photos_path ON photos(path)")
@@ -186,7 +210,7 @@ def insert_or_update_photo(data: Dict) -> int:
         data.get("height"),
         data.get("thumbnail_path"),
         datetime.utcnow().isoformat(),
-        data.get("clip_embedding")
+        data.get("clip_embedding"),
     ))
 
     # Get the id
@@ -196,6 +220,21 @@ def insert_or_update_photo(data: Dict) -> int:
     conn.commit()
     conn.close()
     return photo_id
+
+
+def delete_faces_for_photo(photo_id: int) -> None:
+    """Replace all face detections for one photo after a successful detection pass."""
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM faces WHERE photo_id = ?", (photo_id,))
+        conn.execute(
+            "DELETE FROM people WHERE NOT EXISTS "
+            "(SELECT 1 FROM faces WHERE faces.person_id = people.id)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
 
 def get_all_photos() -> List[sqlite3.Row]:
     conn = get_connection()

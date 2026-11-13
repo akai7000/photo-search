@@ -1,6 +1,7 @@
 import json
 import itertools
 import io
+import runpy
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -92,13 +93,13 @@ class StartupTests(unittest.TestCase):
             startup_splash.main()
             root.overrideredirect.assert_called_once_with(True)
             logo.assert_called_once_with(root)
-            canvas.create_image.assert_called_once_with(39, 39, image=logo.return_value, anchor="nw")
+            canvas.create_image.assert_called_once_with(24, 58, image=logo.return_value, anchor="nw")
             canvas.create_text.assert_any_call(
-                560, 46, text=f"v{startup_splash.APP_VERSION}", fill="#a5c4ca",
-                font=("Segoe UI", 12), anchor="ne"
+                558, 34, text=f"v{startup_splash.APP_VERSION}", fill="#abc3d2",
+                font=("Segoe UI", 10), anchor="ne"
             )
             canvas.create_line.assert_any_call(
-                45, 116, 555, 116, fill="#385460", width=8, capstyle="round"
+                258, 181, 558, 181, fill="#334e63", width=6, capstyle="round"
             )
             self.assertFalse(any(call.kwargs.get("text") == "STARTING PHOTO SEARCH"
                                  for call in canvas.create_text.call_args_list))
@@ -106,7 +107,9 @@ class StartupTests(unittest.TestCase):
             self.assertEqual(button.call_args.kwargs["command"], root.destroy)
             update = root.after.call_args.args[1]
             update()
-            close_button.place.assert_called_once()
+            close_button.place.assert_called_once_with(x=558, y=325, anchor="se")
+            canvas.itemconfigure.assert_any_call(canvas.create_image.return_value, state="hidden")
+            canvas.itemconfigure.assert_any_call(canvas.create_text.return_value, width=520)
             canvas.itemconfigure.assert_any_call(
                 canvas.create_text.return_value, text="STARTUP FAILED", fill="#ffb5af"
             )
@@ -163,10 +166,21 @@ class StartupTests(unittest.TestCase):
         with patch.object(ImageTk, "PhotoImage") as image:
             root = MagicMock()
             logo = startup_splash.load_logo(root)
-            self.assertEqual(startup_splash.LOGO_PATH, Path(__file__).resolve().parents[1] / "images" / "photo_search.jpg")
-            self.assertEqual(image.call_args.args[0].size, (42, 42))
+            self.assertEqual(startup_splash.LOGO_PATH, Path(__file__).resolve().parents[1] / "images" / "snowfoxninjalogo.png")
+            self.assertEqual(image.call_args.args[0].size, (210, 210))
+            self.assertEqual(image.call_args.args[0].mode, "RGBA")
             self.assertEqual(image.call_args.kwargs["master"], root)
             self.assertIs(logo, image.return_value)
+
+    def test_windows_bundle_includes_splash_logo(self):
+        root = Path(__file__).resolve().parents[1]
+        build = runpy.run_path(str(root / "packaging" / "build_windows.py"))
+        meanshape = root / "meanshape_68.pkl"
+        self.assertEqual(build["pyinstaller_assets"](meanshape), [
+            "--add-data", f"{startup_splash.LOGO_PATH};images",
+            "--add-data", f"{meanshape};objects",
+        ])
+        self.assertTrue(startup_splash.LOGO_PATH.is_file())
 
     def test_missing_logo_is_reported_without_preventing_splash(self):
         root = MagicMock()

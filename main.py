@@ -46,10 +46,10 @@ startup.report("Database initialized.")
 startup.report("Loading image search model...")
 from core.clip_engine import search_photos
 startup.report("Image search model loaded.")
-startup.report("Loading face detection model...")
+startup.report("Loading face detection tools...")
 from core.scanner import scan_folders
 import core.scanner as scanner
-startup.report("Face detection model loaded.")
+startup.report("Face detection tools loaded.")
 startup.report("Loading face grouping tools...")
 from core.face_clustering import cluster_faces
 from core.face_thumbnails import delete_face_thumbnails, ensure_face_thumbnails
@@ -73,7 +73,7 @@ photo_count_label = None
 FACE_PAGE_SIZE = 24
 INITIAL_OPEN_GROUPS = 3
 GROUP_PAGE_SIZE = 20
-FACE_PAGE_SIZE_OPTIONS = (24, 32, 40, 48)
+FACE_PAGE_SIZE_OPTIONS = (30, 40, 50, 60)
 INITIAL_OPEN_GROUPS_OPTIONS = tuple(range(1, 11))
 data_switching = False
 storage_jobs = 0
@@ -102,6 +102,7 @@ def load_face_settings():
     if type(open_groups) is not int or open_groups not in INITIAL_OPEN_GROUPS_OPTIONS:
         raise ValueError("Invalid Initial Open Groups setting")
     return page_size, open_groups
+
 
 async def add_folder():
     if data_switching:
@@ -284,7 +285,12 @@ async def index_folders():
     cancel_event.clear()
     try:
         def scan():
-            return scan_folders(folders_to_scan, on_progress, cancel_event, skip_indexed_folders=skip_indexed)
+            return scan_folders(
+                folders_to_scan,
+                on_progress,
+                cancel_event,
+                skip_indexed_folders=skip_indexed,
+            )
         result = await run.io_bound(scan)
         if result["folders_skipped"] == len(folders_to_scan):
             n_clusters = None
@@ -292,6 +298,10 @@ async def index_folders():
             index_progress.update(root="", folder="", current="Grouping faces...")
             update_progress_widgets()
             n_clusters = await run.io_bound(cluster_faces)
+    except Exception as exc:
+        logging.exception("Indexing failed")
+        ui.notify(f"Indexing failed: {exc}", type="negative")
+        return
     finally:
         index_progress["active"] = False
         update_progress_widgets()
@@ -649,17 +659,31 @@ async def render_name_people(data, loading, is_closed, mark_open, release, initi
                                     f"Looks like {suggestion[0]} ({suggestion[1]:.0%} match)"
                                 ).classes("text-caption text-teal-300 px-3")
                     page_label = ui.label()
-                    selected_label = ui.label("0 faces selected")
+                    with ui.row().classes("w-full items-center justify-between"):
+                        selected_label = ui.label("0 faces selected across pages")
+                        page_selection_link = ui.label("Select all on page").classes(
+                            "cursor-pointer text-primary underline"
+                        ).on(
+                            "click", lambda: set_page_selection(not page_all_selected())
+                        )
                     faces_container = ui.row().classes("items-start w-full flex-wrap")
 
                     name_button = []
 
                     def update_selection_label():
                         selected_label.set_text(f"{len(selected)} faces selected across pages")
+                        page_selection_link.set_text(
+                            "Deselect all on page" if page_all_selected() else "Select all on page"
+                        )
                         if name_button:
                             name_button[0].set_text(
                                 f"Name {len(selected)} selected faces" if selected else "Name whole group"
                             )
+
+                    def page_all_selected():
+                        return bool(selections) and all(
+                            checkbox.value for checkbox in selections.values()
+                        )
 
                     def sync_selection():
                         for fid, checkbox in selections.items():
@@ -681,6 +705,7 @@ async def render_name_people(data, loading, is_closed, mark_open, release, initi
                         page_request += 1
                         request = page_request
                         selections.clear()
+                        update_selection_label()
                         start = page * face_page_size
                         page_ids = face_ids[start:start + face_page_size]
                         cached = initial_pages.pop(cluster_id, None) if page == 0 and person_id is None else None
@@ -703,16 +728,27 @@ async def render_name_people(data, loading, is_closed, mark_open, release, initi
                                         thumb = thumbnails.get(fid)
                                         details = photo_details.get(fid)
                                         if thumb is not None:
-                                            image = ui.image(str(thumb)).classes("w-16 h-16 rounded")
-                                            selections[fid] = ui.checkbox(
-                                                "Select", value=fid in selected,
-                                                on_change=lambda e, face_id=fid: face_selection_changed(face_id, e.value),
-                                            )
+                                            with ui.element("div").classes("relative w-16 h-16"):
+                                                image = ui.image(str(thumb)).classes("w-16 h-16 rounded")
+                                                checkbox = ui.checkbox(
+                                                    value=fid in selected,
+                                                    on_change=lambda e, face_id=fid: face_selection_changed(
+                                                        face_id, e.value
+                                                    ),
+                                                )
+                                                checkbox.classes(
+                                                    "face-selection-checkbox absolute top-0 right-0 z-10 "
+                                                    "m-0 p-0 rounded bg-grey-9/80"
+                                                )
+                                                checkbox.style("margin: 0; padding: 0")
+                                                checkbox.props(f'dense aria-label="Select face {fid}"')
+                                                selections[fid] = checkbox
                                         else:
                                             image = ui.label(f"Face {fid} thumbnail unavailable").classes("text-caption text-negative")
                                         if details:
                                             photo_path, preview_path = details
                                             add_face_photo_preview(image, photo_path, preview_path)
+                            update_selection_label()
 
                         if cached is not None:
                             display_page(cached)
@@ -783,6 +819,7 @@ async def render_name_people(data, loading, is_closed, mark_open, release, initi
                             load_once()
 
                     expansion.on_value_change(expansion_changed)
+                    update_selection_label()
                     if expansion.value:
                         load_once()
                     else:
@@ -795,8 +832,6 @@ async def render_name_people(data, loading, is_closed, mark_open, release, initi
                                 on_click=lambda name=suggestion[0]: save_name(name),
                                 icon="auto_awesome", color="positive",
                             )
-                        ui.button("Select all on page", on_click=lambda: set_page_selection(True))
-                        ui.button("Deselect all on page", on_click=lambda: set_page_selection(False))
                         if len(face_ids) > face_page_size:
                             ui.button(f"Select all {len(face_ids)}", on_click=lambda: set_group_selection(True))
                             ui.button("Deselect all", on_click=lambda: set_group_selection(False))
@@ -1230,7 +1265,7 @@ def open_settings():
                     skip_indexed = ui.switch("Skip Previously Indexed Folders", value=skip_indexed_value)
                     ui.label(
                         "Skip completely indexed folders and their subfolders, even if photos have been added or changed. "
-                        "Turn this off to scan them again. Partially indexed folders are still scanned."
+                        "Turn this off to scan them again; partially indexed folders are always scanned."
                     ).classes("text-caption text-gray-400")
                     ui.label("Reset index").classes("text-body1 text-bold")
                     ui.label(
@@ -1314,7 +1349,63 @@ def open_settings():
 def main_page():
     ui.context.client.on_connect(window_ready.page_connected)
     ui.add_head_html(BUSY_OVERLAY_HTML)
+    ui.colors(primary="#2a6682", secondary="#c4dbe8", accent="#e9b55f",
+              dark="#0b1725", dark_page="#081321")
     ui.add_css("""
+        body.body--dark {
+            background: #081321;
+            color: #e8f1f6;
+        }
+        .app-header {
+            background: linear-gradient(110deg, #10243a, #172f42);
+            border-bottom: 1px solid #35546a;
+            padding: 14px 24px;
+        }
+        .app-content {
+            padding-top: 28px;
+            padding-bottom: 36px;
+        }
+        .q-card {
+            background: #13283a;
+            color: #e8f1f6;
+            border: 1px solid #35546a;
+            border-radius: 7px;
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.18);
+        }
+        @layer theme {
+            .q-dialog .bg-grey-9 {
+                background: #102334 !important;
+            }
+            .q-dialog .bg-grey-8 {
+                background: #1d394d !important;
+            }
+            .text-primary:not(.bg-primary) {
+                color: #80bdd8 !important;
+            }
+        }
+        .q-btn {
+            border-radius: 4.5px;
+            letter-spacing: 0.01em;
+        }
+        .rounded,
+        .q-menu:not(.q-menu--square),
+        .q-notification,
+        .q-tooltip--style,
+        .q-field--outlined:not(.q-field--rounded) .q-field__control {
+            border-radius: 2px;
+        }
+        .q-checkbox__bg {
+            border-radius: 1px;
+        }
+        .q-field--dark .q-field__control {
+            color: #c1d9e5;
+        }
+        .folder-expansion {
+            background: #13283a;
+            border: 1px solid #35546a;
+            border-radius: 7px;
+            padding: 8px 18px;
+        }
         .folder-expansion > .q-expansion-item__container > .q-item {
             padding-left: 0;
             padding-right: 0;
@@ -1332,6 +1423,22 @@ def main_page():
         .settings-select .q-field__label {
             font-size: 20px;
         }
+        .face-selection-checkbox .q-checkbox__bg {
+            top: 0;
+            left: 0;
+            right: 0;
+            width: 100%;
+            height: 100%;
+        }
+        .face-selection-checkbox,
+        .face-selection-checkbox .q-checkbox__inner {
+            width: 16px;
+            min-width: 16px;
+            height: 16px;
+        }
+        .face-selection-checkbox .q-checkbox__inner {
+            font-size: 16px;
+        }
         .photo-preview-folder .q-btn__content {
             display: block;
             overflow: hidden;
@@ -1341,7 +1448,7 @@ def main_page():
     """)
     ui.dark_mode().enable()
 
-    with ui.header().classes("items-center gap-2"):
+    with ui.header().classes("app-header items-center gap-3 flex-wrap"):
         ui.button("Add Folder", on_click=add_folder, icon="folder")
         ui.button("Index Folders", on_click=index_folders, icon="storage")
         ui.button("Name People", on_click=open_name_people, icon="face")
@@ -1351,7 +1458,7 @@ def main_page():
         photo_count_label = ui.label("0 photos indexed").classes("text-subtitle1 ml-auto")
         
     # Main content
-    with ui.column().classes("w-full max-w-6xl mx-auto p-4 gap-4"):
+    with ui.column().classes("app-content w-full max-w-6xl mx-auto p-4 gap-4"):
         
         # Selected folders section
         global folders_container, folders_header, folders_summary

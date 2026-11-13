@@ -4,7 +4,16 @@ from pathlib import Path
 from typing import List, Set
 from PIL import Image, ImageOps, ExifTags
 from datetime import datetime
-from core.database import insert_or_update_photo, get_connection, mark_folder_indexed, insert_face, set_folder_total, get_folder_progress, DB_PATH
+from core.database import (
+    DB_PATH,
+    delete_faces_for_photo,
+    get_connection,
+    get_folder_progress,
+    insert_face,
+    insert_or_update_photo,
+    mark_folder_indexed,
+    set_folder_total,
+)
 from core.clip_engine import get_image_embedding
 from core.face_engine import detect_faces
 
@@ -20,7 +29,13 @@ def compute_file_hash(path: Path) -> str:
             hasher.update(chunk)
     return hasher.hexdigest()
 
-def scan_folders(folders: List[str], progress_callback=None, cancel_event=None, *, skip_indexed_folders=False) -> dict:
+def scan_folders(
+    folders: List[str],
+    progress_callback=None,
+    cancel_event=None,
+    *,
+    skip_indexed_folders=False,
+) -> dict:
     """
     Scan the given folders for image files and insert/update them in the database.
     Returns a summary dict.
@@ -104,7 +119,12 @@ def scan_folders(folders: List[str], progress_callback=None, cancel_event=None, 
             row = cursor.fetchone()
             conn.close()
 
-            if row is not None and abs(row["modified_time"] - stat.st_mtime) < 1.0:
+            unchanged = (
+                row is not None
+                and row["modified_time"] is not None
+                and abs(row["modified_time"] - stat.st_mtime) < 1.0
+            )
+            if unchanged:
                 expected_thumbnail = thumbnail_path_for(path, THUMBNAIL_DIR)
                 if row["thumbnail_path"] != str(expected_thumbnail) or not expected_thumbnail.is_file():
                     if expected_thumbnail.is_file():
@@ -132,6 +152,7 @@ def scan_folders(folders: List[str], progress_callback=None, cancel_event=None, 
             date_taken = extract_date_taken(path)
             thumbnail_path, width, height = generate_thumbnail(path, THUMBNAIL_DIR)
             clip_embedding = get_image_embedding(path)
+            faces = detect_faces(path)
 
             data = {
                 "path": str(path),
@@ -150,7 +171,8 @@ def scan_folders(folders: List[str], progress_callback=None, cancel_event=None, 
             changed_folders.add(current_root)
 
             # Face detection
-            faces = detect_faces(path)
+            if row is not None:
+                delete_faces_for_photo(photo_id)
             for face in faces:
                 insert_face(
                     photo_id=photo_id,
