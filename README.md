@@ -11,6 +11,8 @@ Photo Search is a Windows desktop application for indexing and searching a perso
 - View paginated search results as thumbnails and open a larger, orientation-corrected preview.
 - Configure face page size, initially expanded groups, and group-delete confirmations.
 
+Face page size options are 30, 40, 50, or 60, with 30 as the default. Older saved values of 24, 32, and 48 are updated to 30, 30, and 50 respectively when Settings or Name People is opened.
+
 ## Screenshots
 
 These screenshots use an isolated demonstration library with illustrated sample images.
@@ -19,19 +21,19 @@ These screenshots use an isolated demonstration library with illustrated sample 
 
 View searchable folders and their indexing status.
 
-![Main page showing searchable folders and the search box](images/screenshots/main-page.png)
+![Main page showing searchable folders and the search box](images/screenshots/main-page-0.4.png)
 
 ### Search results
 
 Search for a description or a person's name and browse matching photos.
 
-![Search results showing a grid of sample images](images/screenshots/search-results.png)
+![Search results showing a grid of sample images](images/screenshots/search-results-demo-0.4.png)
 
 ### Name People
 
 Review detected face groups and assign names.
 
-![Name People dialog showing sample face groups](images/screenshots/name-people.png)
+![Name People dialog showing sample face groups](images/screenshots/name-people-demo-0.4.png)
 
 When run from source, the application stores its SQLite index, settings, and generated thumbnails under `data/` in the project directory. Installed versions use `%LOCALAPPDATA%\Photo Search\data` by default. In **Settings > Data Storage**, type an existing folder path or select **Browse**, then select **Update** to use it. The chosen directory is remembered between runs, and its existing index and thumbnails are used without moving or copying data. An empty directory gets a new index; thumbnails are generated as needed. A damaged or incompatible database is left untouched and the change is rejected. Stop indexing and searches and close Name People before changing directories. Original photos remain in their selected folders. **Reset Index** in Settings deletes the active index contents, names, generated thumbnails, and settings; it does not delete the original photos or change the data directory.
 
@@ -39,8 +41,8 @@ When run from source, the application stores its SQLite index, settings, and gen
 
 Choose the **CPU** installer for any supported PC, or the **GPU** installer for an NVIDIA GPU with a compatible driver. Each installer is a single executable for 64-bit Windows 10 version 1809 or later; Python is not required on the target PC. The GPU build uses CUDA 12.4 PyTorch and CUDA 12 ONNX Runtime. If the driver or GPU is incompatible, processing may fall back to the CPU. Microsoft Edge WebView2 Runtime is required for the native window.
 
-- [Download the CPU installer (v0.3)](https://pub-5c62851ff87d40acaeee8eb31d082ac7.r2.dev/v0.3/PhotoSearch-0.3-CPU-Setup.exe)
-- [Download the NVIDIA GPU installer (v0.3)](https://pub-5c62851ff87d40acaeee8eb31d082ac7.r2.dev/v0.3/PhotoSearch-0.3-GPU-Setup.exe)
+- [Download the CPU installer (v0.4)](https://pub-5c62851ff87d40acaeee8eb31d082ac7.r2.dev/v0.4/PhotoSearch-0.4-CPU-Setup.exe)
+- [Download the NVIDIA GPU installer (v0.4)](https://pub-5c62851ff87d40acaeee8eb31d082ac7.r2.dev/v0.4/PhotoSearch-0.4-GPU-Setup.exe)
 
 The installers do not contain a photo index, thumbnails, or AI model weights. An internet connection and additional disk space are needed to download models when they are first used. OpenCLIP uses the Hugging Face cache. InsightFace stores its model under `%USERPROFILE%\.insightface`. Review the [InsightFace model license](https://github.com/deepinsight/insightface/tree/master/python-package#license): its pretrained models are for **non-commercial research only**, including when automatically downloaded.
 
