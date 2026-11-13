@@ -432,7 +432,7 @@ class AddFolderTests(unittest.IsolatedAsyncioTestCase):
             control.classes.return_value = control
         self.ui.select.side_effect = controls
         self.state["open_settings"]()
-        self.assertEqual(self.ui.select.call_args_list[0].args[0], [24, 32, 40, 48])
+        self.assertEqual(self.ui.select.call_args_list[0].args[0], [24, 30, 32, 40, 48, 50, 60])
         self.assertEqual(self.ui.select.call_args_list[0].kwargs["value"], 24)
         self.assertEqual(self.ui.select.call_args_list[1].args[0], list(range(1, 11)))
         self.assertEqual(self.ui.select.call_args_list[1].kwargs["value"], 3)
@@ -444,6 +444,12 @@ class AddFolderTests(unittest.IsolatedAsyncioTestCase):
         self.state["open_settings"]()
         self.assertEqual(self.ui.select.call_args_list[2].kwargs["value"], 40)
         self.assertEqual(self.ui.select.call_args_list[3].kwargs["value"], 10)
+
+    async def test_all_supported_page_sizes_restore(self):
+        for size in (24, 30, 32, 40, 48, 50, 60):
+            with self.subTest(size=size):
+                database.save_setting("face_page_size", size)
+                self.assertEqual(self.state["load_face_settings"](), (size, 3))
 
     async def test_face_settings_have_readable_controls_and_explanations(self):
         controls = [MagicMock(), MagicMock()]
