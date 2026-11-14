@@ -46,7 +46,7 @@ jobs:
       - name: Install Inno Setup
         run: |
           # Download and install Inno Setup silently
-          $innoSetupUrl = "https://files.jrsoftware.org/is/6/innosetup-6.2.2.exe"
+          $innoSetupUrl = "https://files.jrsoftware.org/is/6/innosetup-6.3.5.exe"
           $installerPath = "$env:TEMP\innosetup-installer.exe"
           Write-Host "Downloading Inno Setup..."
           Invoke-WebRequest -Uri $innoSetupUrl -OutFile $installerPath
@@ -57,12 +57,12 @@ jobs:
       - name: Build CPU Installer
         run: |
           cd packaging
-          python build_windows.py CPU --iscc "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          python build_windows.py CPU --iscc "C:\Program Files\Inno Setup 6\ISCC.exe"
       
       - name: Build GPU Installer
         run: |
           cd packaging
-          python build_windows.py GPU --iscc "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" 2>$null || Write-Host "GPU build skipped (CUDA dependencies may not be available)"
+          python build_windows.py GPU --iscc "C:\Program Files\Inno Setup 6\ISCC.exe" 2>$null || Write-Host "GPU build skipped (CUDA dependencies may not be available)"
       
       - name: Verify installers
         run: |
