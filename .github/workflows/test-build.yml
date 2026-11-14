@@ -45,14 +45,7 @@ jobs:
       
       - name: Install Inno Setup
         run: |
-          # Download and install Inno Setup silently
-          $innoSetupUrl = "https://files.jrsoftware.org/is/6/innosetup-6.3.5.exe"
-          $installerPath = "$env:TEMP\innosetup-installer.exe"
-          Write-Host "Downloading Inno Setup..."
-          Invoke-WebRequest -Uri $innoSetupUrl -OutFile $installerPath
-          Write-Host "Installing Inno Setup..."
-          & $installerPath /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
-          Write-Host "Inno Setup installed"
+          choco install innosetup -y
       
       - name: Build CPU Installer
         run: |
