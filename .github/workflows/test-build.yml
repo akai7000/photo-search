@@ -69,7 +69,7 @@ jobs:
       - name: Build GPU Installer
         run: |
           cd packaging
-          python build_windows.py GPU --iscc "${{ steps.iscc.outputs.ISCC_PATH }}" 2>$null || Write-Host "GPU build skipped (CUDA dependencies may not be available)"
+          python build_windows.py GPU --iscc "${{ steps.iscc.outputs.ISCC_PATH }}" ; if ($LASTEXITCODE -ne 0) { Write-Host "GPU build skipped (CUDA dependencies may not be available)"; exit 0 }
       
       - name: Verify installers
         run: |
