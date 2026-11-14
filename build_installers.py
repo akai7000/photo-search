@@ -8,6 +8,24 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 
+def check_python_version():
+    """Check if Python version is compatible."""
+    major, minor = sys.version_info[:2]
+    if major < 3 or (major == 3 and minor < 11):
+        print("\n" + "="*60)
+        print("[ERROR] Python 3.11 or later is required")
+        print(f"[ERROR] You are using Python {major}.{minor}")
+        print("="*60 + "\n")
+        sys.exit(1)
+    
+    if major >= 3 and minor > 13:
+        print("\n" + "="*60)
+        print(f"[WARN] Python {major}.{minor} may not be fully supported")
+        print("[WARN] Python 3.11-3.13 is recommended for best compatibility")
+        print("[WARN] Continuing anyway...")
+        print("="*60 + "\n")
+
+
 def find_iscc():
     """Find ISCC.exe in Program Files directories."""
     import glob
@@ -72,6 +90,8 @@ def build_variant(variant):
 
 
 def main():
+    check_python_version()
+    
     parser = argparse.ArgumentParser(
         description="Build Photo Search installers locally"
     )
