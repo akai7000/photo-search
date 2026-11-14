@@ -43,12 +43,29 @@ jobs:
           echo "app_version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           echo "Version extracted: $version"
       
-      - name: Create mock installer (for testing)
+      - name: Install Inno Setup
         run: |
-          mkdir -p "dist\installers"
-          # Create a test file (in real workflow, this would be the actual installer)
-          echo "PhotoSearch-${{ steps.version.outputs.app_version }}-CPU" > "dist\installers\PhotoSearch-${{ steps.version.outputs.app_version }}-CPU.exe"
-          echo "PhotoSearch-${{ steps.version.outputs.app_version }}-GPU" > "dist\installers\PhotoSearch-${{ steps.version.outputs.app_version }}-GPU.exe"
+          # Download and install Inno Setup silently
+          $innoSetupUrl = "https://files.jrsoftware.org/is/6/innosetup-6.2.2.exe"
+          $installerPath = "$env:TEMP\innosetup-installer.exe"
+          Write-Host "Downloading Inno Setup..."
+          Invoke-WebRequest -Uri $innoSetupUrl -OutFile $installerPath
+          Write-Host "Installing Inno Setup..."
+          & $installerPath /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+          Write-Host "Inno Setup installed"
+      
+      - name: Build CPU Installer
+        run: |
+          cd packaging
+          python build_windows.py CPU --iscc "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+      
+      - name: Build GPU Installer
+        run: |
+          cd packaging
+          python build_windows.py GPU --iscc "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" 2>$null || Write-Host "GPU build skipped (CUDA dependencies may not be available)"
+      
+      - name: Verify installers
+        run: |
           echo "Files to upload:"
           dir "dist\installers"
       
