@@ -68,6 +68,9 @@ jobs:
       
       - name: Build GPU Installer
         run: |
+          Write-Host "Installing GPU dependencies..."
+          pip install torch==2.0.0 torchvision==0.15.0 torchaudio==2.0.0 --index-url https://download.pytorch.org/whl/cu124
+          pip install onnxruntime-gpu==1.20.2
           cd packaging
           python build_windows.py GPU --iscc "${{ steps.iscc.outputs.ISCC_PATH }}" ; if ($LASTEXITCODE -ne 0) { Write-Host "GPU build skipped (CUDA dependencies may not be available)"; exit 0 }
       
