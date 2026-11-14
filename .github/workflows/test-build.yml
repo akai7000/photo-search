@@ -45,8 +45,8 @@ jobs:
         run: |
           mkdir -p "dist\installers"
           # Create a test file (in real workflow, this would be the actual installer)
-          echo "PhotoSearch-${{ steps.version.outputs.app_version }}-CPU" > "dist\installers\PhotoSearch-CPU.exe"
-          echo "PhotoSearch-${{ steps.version.outputs.app_version }}-GPU" > "dist\installers\PhotoSearch-GPU.exe"
+          echo "PhotoSearch-${{ steps.version.outputs.app_version }}-CPU" > "dist\installers\PhotoSearch-${{ steps.version.outputs.app_version }}-CPU.exe"
+          echo "PhotoSearch-${{ steps.version.outputs.app_version }}-GPU" > "dist\installers\PhotoSearch-${{ steps.version.outputs.app_version }}-GPU.exe"
           echo "Files to upload:"
           dir "dist\installers"
       

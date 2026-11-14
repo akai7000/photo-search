@@ -35,7 +35,7 @@ def main():
         uploaded_count = 0
         for file in installer_dir.glob('*'):
             if file.is_file():
-                r2_key = f'installers/v{version}/{file.name}'
+                r2_key = f'installers/{file.name}'
                 print(f'Uploading: {file.name} -> {r2_key}')
                 try:
                     with open(file, 'rb') as f:
