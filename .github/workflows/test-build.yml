@@ -46,16 +46,30 @@ jobs:
       - name: Install Inno Setup
         run: |
           choco install innosetup -y
+          # Refresh environment
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+      
+      - name: Find Inno Setup path
+        run: |
+          $isccPath = Get-ChildItem -Path "C:\Program Files*" -Filter "ISCC.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+          if ($isccPath) {
+            echo "ISCC_PATH=$isccPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            Write-Host "Found ISCC at: $isccPath"
+          } else {
+            Write-Error "ISCC.exe not found"
+            exit 1
+          }
+        id: iscc
       
       - name: Build CPU Installer
         run: |
           cd packaging
-          python build_windows.py CPU --iscc "C:\Program Files\Inno Setup 6\ISCC.exe"
+          python build_windows.py CPU --iscc "${{ steps.iscc.outputs.ISCC_PATH }}"
       
       - name: Build GPU Installer
         run: |
           cd packaging
-          python build_windows.py GPU --iscc "C:\Program Files\Inno Setup 6\ISCC.exe" 2>$null || Write-Host "GPU build skipped (CUDA dependencies may not be available)"
+          python build_windows.py GPU --iscc "${{ steps.iscc.outputs.ISCC_PATH }}" 2>$null || Write-Host "GPU build skipped (CUDA dependencies may not be available)"
       
       - name: Verify installers
         run: |
