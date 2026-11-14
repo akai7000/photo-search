@@ -72,12 +72,22 @@ jobs:
           pip install torch==2.0.0 torchvision==0.15.0 torchaudio==2.0.0 --index-url https://download.pytorch.org/whl/cu124
           pip install onnxruntime-gpu==1.20.2
           cd packaging
-          python build_windows.py GPU --iscc "${{ steps.iscc.outputs.ISCC_PATH }}" ; if ($LASTEXITCODE -ne 0) { Write-Host "GPU build skipped (CUDA dependencies may not be available)"; exit 0 }
+          python build_windows.py GPU --iscc "${{ steps.iscc.outputs.ISCC_PATH }}"
+          if ($LASTEXITCODE -ne 0) { 
+            Write-Host "[WARN] GPU build failed - showing error details:"
+            exit 1
+          }
       
       - name: Verify installers
         run: |
-          echo "Files to upload:"
-          dir "dist\installers"
+          Write-Host "=== Files in dist/installers ==="
+          if (Test-Path "dist\installers") {
+            dir "dist\installers"
+            $files = @(Get-ChildItem -Path "dist\installers" -File)
+            Write-Host "Total files found: $($files.Count)"
+          } else {
+            Write-Host "[ERROR] dist/installers directory does not exist!"
+          }
       
       - name: Upload to Cloudflare R2
         if: success()
