@@ -57,43 +57,10 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          APP_VERSION: ${{ steps.version.outputs.app_version }}
         run: |
           pip install boto3
-          python -c "
-import boto3
-import os
-from pathlib import Path
-
-# Get version
-version = r'${{ steps.version.outputs.app_version }}'
-r2_url = f\"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com\"
-
-print(f'Uploading installers for v{version} to R2...')
-print(f'R2 URL: {r2_url}')
-print(f'Bucket: {os.environ[\"R2_BUCKET_NAME\"]}')
-
-# Initialize S3 client for R2
-s3 = boto3.client(
-    's3',
-    endpoint_url=r2_url,
-    aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
-    aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
-    region_name='auto'
-)
-
-# Upload files
-installer_dir = Path('dist/installers')
-if installer_dir.exists():
-    for file in installer_dir.glob('*'):
-        if file.is_file():
-            r2_key = f'installers/v{version}/{file.name}'
-            print(f'Uploading: {file.name} -> {r2_key}')
-            with open(file, 'rb') as f:
-                s3.upload_fileobj(f, os.environ['R2_BUCKET_NAME'], r2_key)
-            print(f'✅ Uploaded: {r2_key}')
-else:
-    print('⚠️ No installers found in dist/installers')
-"
+          python .github/scripts/upload_to_r2.py
       
       - name: Build status
         if: success()
