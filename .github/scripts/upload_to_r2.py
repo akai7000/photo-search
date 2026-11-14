@@ -11,7 +11,7 @@ def main():
     r2_secret_key = os.environ.get('R2_SECRET_ACCESS_KEY')
     
     if not all([r2_account_id, r2_bucket_name, r2_access_key, r2_secret_key]):
-        print("⚠️ R2 credentials not configured. Skipping upload.")
+        print("[WARN] R2 credentials not configured. Skipping upload.")
         return
     
     r2_url = f"https://{r2_account_id}.r2.cloudflarestorage.com"
@@ -40,17 +40,18 @@ def main():
                 try:
                     with open(file, 'rb') as f:
                         s3.upload_fileobj(f, r2_bucket_name, r2_key)
-                    print(f'✅ Uploaded: {r2_key}')
+                    print(f'[OK] Uploaded: {r2_key}')
                     uploaded_count += 1
                 except Exception as e:
-                    print(f'❌ Error uploading {file.name}: {e}')
+                    print(f'[ERROR] Error uploading {file.name}: {e}')
         
         if uploaded_count > 0:
-            print(f"\n✅ Successfully uploaded {uploaded_count} file(s) to R2")
+            print(f"\n[OK] Successfully uploaded {uploaded_count} file(s) to R2")
         else:
-            print("\n⚠️ No files were uploaded")
+            print("\n[WARN] No files were uploaded")
     else:
-        print('⚠️ No installers found in dist/installers')
+        print('[WARN] No installers found in dist/installers')
 
 if __name__ == '__main__':
     main()
+
