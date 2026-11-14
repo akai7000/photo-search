@@ -20,10 +20,17 @@ def find_iscc():
         if matches:
             return matches[0]
     
-    raise FileNotFoundError(
-        "ISCC.exe not found. Please install Inno Setup: "
-        "choco install innosetup"
-    )
+    print("\n" + "="*60)
+    print("[ERROR] ISCC.exe not found")
+    print("="*60)
+    print("\nTo install Inno Setup:")
+    print("  1. Download from: https://www.jrsoftware.org/isdl.php")
+    print("  2. Or use Chocolatey (requires admin):")
+    print("     choco install innosetup -y")
+    print("\nAfter installation, run this script again.")
+    print("="*60 + "\n")
+    
+    raise FileNotFoundError("ISCC.exe not found. Please install Inno Setup.")
 
 
 def build_variant(variant):
