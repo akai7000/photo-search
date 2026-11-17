@@ -31,7 +31,21 @@ Search for a description or a person's name and browse matching photos.
 
 ### Name People
 
-Review detected face groups and assign names. Press Enter in a name field to name the selected faces, or the whole group if none are selected.
+The default view shows one representative face per group, with up to 40 groups
+per page. Suggested names are filled in for review. Enter or choose a name and
+press Enter or **Name** to name the whole group; focus moves to the group now in
+the same position. Named people appear in a separate expandable section, where they
+can be renamed or deleted. The representative is the largest detected face, not
+necessarily the clearest one.
+
+Use **Review faces** on a group or **Advanced** to inspect and select individual
+faces. In the advanced view, name selected faces to move them to another person,
+or name the whole group when none are selected. This also lets you split people
+who were accidentally named together: select one person's faces and give them a
+different name. Assigning an existing name merges faces into that named group.
+Deleting a group or face detection does not delete the original photos.
+**Delete All Unnamed Groups** removes unnamed groups and their face detections
+after confirmation; named people and original photos are preserved.
 
 ![Name People dialog showing sample face groups](images/screenshots/name-people-demo-0.4.png)
 
@@ -88,6 +102,9 @@ py -3.13 -m venv .venv-gpu
 ```
 
 The build script downloads and verifies the pinned face models if needed, bundles only those two model files, rejects bundled databases and other model weights, includes third-party notices, and writes installers to `dist\installers`. Build artifacts can be several gigabytes; allow ample free disk space. Code signing and publication are separate steps.
+
+Windows builds use the Picture Search logo as the application, shortcut, taskbar,
+and installer icon. Rebuild and reinstall to update an existing installation.
 
 ## Using the application
 

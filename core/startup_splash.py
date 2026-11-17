@@ -44,16 +44,15 @@ def main():
         color = "#" + "".join(f"{round(a + (b - a) * ratio):02x}" for a, b in zip(top, bottom))
         canvas.create_line(0, y, WIDTH, y, fill=color)
 
-    canvas.create_rectangle(1, 1, WIDTH - 2, HEIGHT - 2, outline="#355a71")
     try:
         logo = load_logo(root)
     except (ImportError, OSError, ValueError, tk.TclError) as exc:
         print(f"Could not load splash image {LOGO_PATH}: {exc}", file=sys.stderr)
     else:
         logo_item = canvas.create_image(24, 58, image=logo, anchor="nw")
-    canvas.create_text(258, 65, text="PHOTO SEARCH", fill="#91bbd0",
-                       font=("Segoe UI", 9, "bold"), anchor="nw")
-    canvas.create_text(258, 88, text="Your photos.\nEasier to find.", fill="#f3f8fc",
+    # canvas.create_text(258, 65, text="PHOTO SEARCH", fill="#91bbd0",
+    #                    font=("Segoe UI", 9, "bold"), anchor="nw")
+    canvas.create_text(258, 88, text="PHOTO SEARCH", fill="#f3f8fc",
                        font=("Segoe UI", 20, "bold"), anchor="nw")
     canvas.create_text(558, 34, text=f"v{APP_VERSION}", fill="#abc3d2",
                        font=("Segoe UI", 10), anchor="ne")

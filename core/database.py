@@ -394,6 +394,29 @@ def get_clusters():
     return rows
 
 
+def get_group_representatives() -> dict[tuple[int | None, int | None], int]:
+    """Choose the largest detected face in each named or unnamed group."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT cluster_id, person_id, id FROM (
+                SELECT cluster_id, person_id, id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY person_id IS NOT NULL, COALESCE(person_id, cluster_id)
+                           ORDER BY bbox_w * bbox_h DESC, id
+                       ) AS rank
+                FROM faces
+                WHERE person_id IS NOT NULL OR cluster_id IS NOT NULL
+            ) WHERE rank = 1
+        """).fetchall()
+        return {
+            (None if row["person_id"] is not None else row["cluster_id"], row["person_id"]): row["id"]
+            for row in rows
+        }
+    finally:
+        conn.close()
+
+
 def suggest_group_names(threshold: float = 0.45) -> dict[int, tuple[str, float]]:
     """Suggest a saved name for each unnamed group by comparing average face embeddings.
 
@@ -582,6 +605,39 @@ def delete_face_group(
 ) -> list[int]:
     """Delete exactly the face detections shown in a group, not their photos."""
     return _delete_faces(face_ids, cluster_id=cluster_id, person_id=person_id, whole_group=True)
+
+
+def delete_all_unnamed_face_groups(
+    groups: list[tuple[int, list[int]]],
+) -> list[int]:
+    """Delete confirmed unnamed groups atomically, preserving named faces and photos."""
+    expected = {}
+    for cluster_id, face_ids in groups:
+        if cluster_id is None or not face_ids:
+            raise ValueError("Invalid unnamed face group")
+        for face_id in face_ids:
+            if face_id in expected:
+                raise ValueError("Duplicate face in groups")
+            expected[face_id] = cluster_id
+    if not expected:
+        raise ValueError("There are no unnamed face groups to delete")
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        with conn:
+            current = {
+                row["id"]: row["cluster_id"]
+                for row in conn.execute(
+                    "SELECT id, cluster_id FROM faces "
+                    "WHERE cluster_id IS NOT NULL AND person_id IS NULL"
+                )
+            }
+            if current != expected:
+                raise ValueError("The unnamed face groups changed; reopen Name People and try again")
+            conn.execute("DELETE FROM faces WHERE cluster_id IS NOT NULL AND person_id IS NULL")
+    finally:
+        conn.close()
+    return sorted(expected)
 
 
 def delete_selected_faces(

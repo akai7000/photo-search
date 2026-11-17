@@ -73,6 +73,8 @@ photo_count_label = None
 FACE_PAGE_SIZE = 30
 INITIAL_OPEN_GROUPS = 3
 GROUP_PAGE_SIZE = 20
+SIMPLE_GROUP_PAGE_SIZE = 40
+NAME_PEOPLE_CARD_CLASSES = "w-full max-w-6xl h-[85vh] max-h-[85vh] overflow-hidden no-wrap"
 FACE_PAGE_SIZE_OPTIONS = (30, 40, 50, 60)
 INITIAL_OPEN_GROUPS_OPTIONS = tuple(range(1, 11))
 data_switching = False
@@ -503,7 +505,18 @@ def prepare_face_page(face_ids):
     return thumbnails, errors, get_face_photo_details(face_ids)
 
 
-def open_name_people(group_page=1):
+def prepare_simple_name_people():
+    clusters = get_clusters()
+    suggestions = suggest_group_names()
+    clusters.sort(key=lambda cluster: (
+        cluster["person_id"] is not None,
+        cluster["cluster_id"] not in suggestions if cluster["person_id"] is None else False,
+        -cluster["face_count"] if cluster["person_id"] is None else 0,
+    ))
+    return clusters, get_people_names(), suggestions, database.get_group_representatives()
+
+
+def open_name_people(group_page=1, *, simple=False, focus_group=None):
     global name_people_active
     if data_switching:
         ui.notify("Wait for the data directory change to finish.", type="warning")
@@ -538,10 +551,12 @@ def open_name_people(group_page=1):
     loading.open()
 
     async def load():
+        nonlocal group_page
         if closed:
             return
         try:
-            data = await storage_io_bound(prepare_name_people)
+            prepare = prepare_simple_name_people if simple else prepare_name_people
+            data = await storage_io_bound(prepare)
         except Exception as exc:
             if not closed:
                 loading.close()
@@ -555,7 +570,19 @@ def open_name_people(group_page=1):
             ui.notify("No face groups found. Index photos with people first.")
             return
         try:
-            await render_name_people(data, loading, lambda: closed, mark_open, release, group_page)
+            if simple:
+                await render_simple_name_people(data, loading, lambda: closed, mark_open, release)
+            else:
+                if focus_group is not None:
+                    group_page = next(
+                        (index // GROUP_PAGE_SIZE + 1 for index, cluster in enumerate(clusters)
+                         if (cluster["cluster_id"], cluster["person_id"]) == focus_group),
+                        group_page,
+                    )
+                    await render_name_people(data, loading, lambda: closed, mark_open, release,
+                                             group_page, focus_group)
+                else:
+                    await render_name_people(data, loading, lambda: closed, mark_open, release, group_page)
         except Exception as exc:
             if not closed:
                 loading.close()
@@ -566,7 +593,391 @@ def open_name_people(group_page=1):
         ui.timer(0.01, load, once=True)
 
 
-async def render_name_people(data, loading, is_closed, mark_open, release, initial_group_page=1):
+def confirm_delete_all_unnamed_groups(clusters, refresh_groups, is_busy):
+    if is_busy():
+        return
+    groups = [
+        (cluster["cluster_id"], [int(face_id) for face_id in cluster["face_ids"].split(",")])
+        for cluster in clusters
+        if cluster["person_id"] is None
+    ]
+    if not groups:
+        ui.notify("There are no unnamed face groups to delete.", type="warning")
+        return
+    face_count = sum(len(face_ids) for _, face_ids in groups)
+    client = ui.context.client
+    with ui.dialog() as confirmation, ui.card():
+        ui.label(f"Delete all {len(groups)} unnamed groups and their {face_count} face detections?")
+        ui.label(
+            "This includes unnamed groups on every page. Named people and original photos will not be deleted. "
+            "Faces may be detected again if photos are reindexed."
+        ).classes("text-caption")
+
+        def confirm():
+            if is_busy():
+                return
+            try:
+                deleted = database.delete_all_unnamed_face_groups(groups)
+            except (ValueError, sqlite3.Error) as exc:
+                ui.notify(f"Could not delete all unnamed groups: {exc}", type="negative")
+                return
+            errors = delete_face_thumbnails(deleted)
+            if errors:
+                ui.notify("Faces deleted, but some thumbnails could not be removed. Check the console.", type="warning")
+            else:
+                ui.notify(f"Deleted {len(deleted)} face detection(s)")
+            with client.layout:
+                confirmation.close()
+                refresh_groups()
+
+        with ui.row():
+            ui.button("Cancel", on_click=confirmation.close)
+            ui.button("Delete all unnamed groups", on_click=confirm, color="negative")
+    confirmation.open()
+
+
+async def render_simple_name_people(data, loading, is_closed, mark_open, release):
+    clusters, people_names, suggestions, representatives = data
+    unnamed_page = 1
+    named_page = 1
+    named_expanded = False
+    refreshing = False
+    dialog_closed = False
+    generation = 0
+    drafts = {}
+    pending_focus = None
+    pending_focus_index = None
+    client = ui.context.client
+
+    with client.layout:
+        dialog = ui.dialog()
+
+    def close_dialog():
+        nonlocal dialog_closed
+        dialog_closed = True
+        release()
+
+    dialog.on("hide", close_dialog)
+
+    def group_key(cluster):
+        return cluster["cluster_id"], cluster["person_id"]
+
+    def next_unnamed(key):
+        keys = [group_key(cluster) for cluster in clusters if cluster["person_id"] is None]
+        if key not in keys or len(keys) < 2:
+            return None
+        return keys[(keys.index(key) + 1) % len(keys)]
+
+    def unnamed_index(key):
+        unnamed = [cluster for cluster in clusters if cluster["person_id"] is None]
+        return next((index for index, cluster in enumerate(unnamed) if group_key(cluster) == key), None)
+
+    def open_advanced(key=None):
+        if refreshing or dialog_closed:
+            return
+        dialog.close()
+        with client.layout:
+            open_name_people(focus_group=key)
+
+    def refresh_groups(focus_key=None, *, focus_index=None):
+        nonlocal refreshing, pending_focus, pending_focus_index
+        if refreshing or dialog_closed:
+            return
+        pending_focus = focus_key
+        pending_focus_index = focus_index
+        refreshing = True
+        status.set_text("Updating groups...")
+        retry.set_visibility(False)
+        content.props("inert")
+
+        async def reload_groups():
+            nonlocal clusters, people_names, suggestions, representatives
+            nonlocal unnamed_page, named_page, refreshing, pending_focus
+            if dialog_closed:
+                return
+            try:
+                new_data = await storage_io_bound(prepare_simple_name_people)
+            except Exception as exc:
+                if not dialog_closed:
+                    refreshing = False
+                    status.set_text("Could not update groups.")
+                    retry.set_visibility(True)
+                    ui.notify(f"Could not update groups: {exc}. Retry updating groups.", type="negative")
+                raise
+            if dialog_closed:
+                return
+            clusters, people_names, suggestions, representatives = new_data
+            unnamed = [cluster for cluster in clusters if cluster["person_id"] is None]
+            named = [cluster for cluster in clusters if cluster["person_id"] is not None]
+            if pending_focus_index is not None and unnamed:
+                pending_focus = group_key(unnamed[min(pending_focus_index, len(unnamed) - 1)])
+            if pending_focus is not None:
+                for index, cluster in enumerate(unnamed):
+                    if group_key(cluster) == pending_focus:
+                        unnamed_page = index // SIMPLE_GROUP_PAGE_SIZE + 1
+                        break
+            unnamed_page = min(unnamed_page, max(1, (len(unnamed) + SIMPLE_GROUP_PAGE_SIZE - 1) // SIMPLE_GROUP_PAGE_SIZE))
+            named_page = min(named_page, max(1, (len(named) + SIMPLE_GROUP_PAGE_SIZE - 1) // SIMPLE_GROUP_PAGE_SIZE))
+            drafts_keys = {group_key(cluster) for cluster in clusters}
+            for key in list(drafts):
+                if key not in drafts_keys:
+                    del drafts[key]
+            content.props(remove="inert")
+            refreshing = False
+            status.set_text("")
+            render_groups(pending_focus)
+
+        with client.layout:
+            ui.timer(0.01, reload_groups, once=True)
+
+    def save_group(cluster, name):
+        if refreshing or dialog_closed:
+            return
+        name = (name or "").strip()
+        if not name:
+            ui.notify("Enter a name first", type="warning")
+            return
+        key = group_key(cluster)
+        focus_index = unnamed_index(key) if cluster["person_id"] is None else None
+        try:
+            if cluster["person_id"] is None:
+                assign_name_to_cluster(cluster["cluster_id"], name)
+            else:
+                rename_person(cluster["person_id"], name)
+        except (ValueError, sqlite3.Error) as exc:
+            ui.notify(f"Could not save name: {exc}", type="negative")
+            return
+        drafts.pop(key, None)
+        ui.notify(f"Saved name '{name}'")
+        refresh_groups(focus_index=focus_index)
+
+    def confirm_delete(cluster):
+        if refreshing or dialog_closed:
+            return
+        key = group_key(cluster)
+        face_ids = [int(face_id) for face_id in cluster["face_ids"].split(",")]
+        focus_key = next_unnamed(key) if cluster["person_id"] is None else None
+
+        def delete_group(skip_confirmation=False):
+            try:
+                deleted = delete_face_group(face_ids, cluster_id=cluster["cluster_id"],
+                                            person_id=cluster["person_id"])
+            except (ValueError, sqlite3.Error) as exc:
+                ui.notify(f"Could not delete faces: {exc}", type="negative")
+                return False
+            if skip_confirmation:
+                try:
+                    save_setting("skip_delete_group_confirmation", True)
+                except sqlite3.Error as exc:
+                    ui.notify(f"Faces deleted, but could not save confirmation preference: {exc}", type="warning")
+            errors = delete_face_thumbnails(deleted)
+            if errors:
+                ui.notify("Faces deleted, but some thumbnails could not be removed. Check the console.", type="warning")
+            else:
+                ui.notify(f"Deleted {len(deleted)} face detection(s)")
+            return True
+
+        if load_setting("skip_delete_group_confirmation", False):
+            if delete_group():
+                refresh_groups(focus_key)
+            return
+
+        with ui.dialog() as confirmation, ui.card():
+            ui.label(f"Delete all {len(face_ids)} face detections in this group?")
+            ui.label("Original photos will not be deleted. Faces may be detected again if photos are reindexed.").classes(
+                "text-caption"
+            )
+            skip = ui.checkbox("Do not ask again for group deletion", value=False)
+
+            def confirm():
+                if refreshing or dialog_closed:
+                    return
+                if delete_group(skip.value):
+                    with client.layout:
+                        confirmation.close()
+                        refresh_groups(focus_key)
+
+            with ui.row():
+                ui.button("Cancel", on_click=confirmation.close)
+                ui.button("Delete faces", on_click=confirm, color="negative")
+        confirmation.open()
+
+    def render_groups(focus_key=None, *, focus_default=False):
+        nonlocal generation
+        generation += 1
+        current_generation = generation
+        unnamed = [cluster for cluster in clusters if cluster["person_id"] is None]
+        named = [cluster for cluster in clusters if cluster["person_id"] is not None]
+        visible_faces = []
+        inputs = {}
+        content.clear()
+
+        def render_row(cluster):
+            key = group_key(cluster)
+            representative = representatives.get(key)
+            with ui.row().classes("w-full min-w-0 items-center no-wrap gap-2"):
+                with ui.column().classes("items-center gap-0 shrink-0"):
+                    image = ui.image().classes("w-20 h-20 rounded").props("fit=cover")
+                    image.set_visibility(False)
+                    placeholder = ui.label("Loading face...").classes("text-caption")
+                    if representative is not None:
+                        visible_faces.append((representative, image, placeholder))
+                    else:
+                        placeholder.set_text("Face unavailable")
+                with ui.column().classes("grow min-w-0 gap-0"):
+                    label = cluster["person_name"] or f"Group {cluster['cluster_id'] + 1}"
+                    count = cluster["face_count"]
+                    ui.label(f"{label} ({count} {'face' if count == 1 else 'faces'})").classes("text-caption")
+                    suggestion = suggestions.get(cluster["cluster_id"]) if cluster["person_id"] is None else None
+                    if suggestion:
+                        ui.label(f"Looks like {suggestion[0]} ({suggestion[1]:.0%} match)").classes(
+                            "text-caption text-teal-300"
+                        )
+                    default_name = cluster["person_name"] or (suggestion[0] if suggestion else "")
+                    name_input = ui.input(
+                        label="Name", value=drafts.get(key, default_name),
+                        autocomplete=list(people_names),
+                    ).props("clearable").classes("w-full")
+                    inputs[key] = name_input
+                    name_input.on_value_change(lambda event: drafts.__setitem__(key, event.value or ""))
+                    if people_names:
+                        with name_input.add_slot("append"):
+                            ui.icon("arrow_drop_down").classes("cursor-pointer")
+                            with ui.menu():
+                                for saved_name in people_names:
+                                    ui.menu_item(saved_name, on_click=lambda name=saved_name: name_input.set_value(name))
+                def apply_name():
+                    save_group(cluster, name_input.value)
+                name_input.on("keydown.enter", apply_name)
+                ui.button("Save" if cluster["person_id"] is not None else "Name",
+                          on_click=apply_name, color="primary").props("no-caps")
+                ui.button(icon="manage_search", on_click=lambda: open_advanced(key)).props(
+                    'flat round aria-label="Review faces"'
+                ).tooltip("Review individual faces")
+                ui.button(icon="delete", on_click=lambda: confirm_delete(cluster), color="negative").props(
+                    'flat round aria-label="Delete group"'
+                ).tooltip("Delete group")
+
+        def change_unnamed_page(value):
+            nonlocal unnamed_page
+            if value is not None and value != unnamed_page and not refreshing:
+                unnamed_page = value
+                render_groups(focus_default=True)
+
+        def change_named_page(value):
+            nonlocal named_page
+            if value is not None and value != named_page and not refreshing:
+                named_page = value
+                render_groups()
+
+        def toggle_named(event):
+            nonlocal named_expanded
+            if bool(event.value) != named_expanded:
+                named_expanded = bool(event.value)
+                render_groups()
+
+        with content:
+            ui.label(f"Unnamed groups ({len(unnamed)})").classes("text-subtitle1 text-bold")
+            if not unnamed:
+                ui.label("No unnamed groups.").classes("text-caption")
+            else:
+                page_count = (len(unnamed) + SIMPLE_GROUP_PAGE_SIZE - 1) // SIMPLE_GROUP_PAGE_SIZE
+                if page_count > 1:
+                    ui.pagination(1, page_count, value=unnamed_page,
+                                  direction_links=True, on_change=lambda event: change_unnamed_page(event.value))
+                start = (unnamed_page - 1) * SIMPLE_GROUP_PAGE_SIZE
+                with ui.element("div").classes("grid grid-cols-1 lg:grid-cols-2 w-full gap-3"):
+                    for cluster in unnamed[start:start + SIMPLE_GROUP_PAGE_SIZE]:
+                        render_row(cluster)
+
+            with ui.expansion(f"Named people ({len(named)})", value=named_expanded).classes("w-full").props(
+                'header-class="q-pa-none text-subtitle1 text-bold"'
+            ) as named_section:
+                named_section.on_value_change(toggle_named)
+                if named_expanded:
+                    if not named:
+                        ui.label("No named people yet.").classes("text-caption")
+                    else:
+                        page_count = (len(named) + SIMPLE_GROUP_PAGE_SIZE - 1) // SIMPLE_GROUP_PAGE_SIZE
+                        if page_count > 1:
+                            ui.pagination(1, page_count, value=named_page,
+                                          direction_links=True, on_change=lambda event: change_named_page(event.value))
+                        start = (named_page - 1) * SIMPLE_GROUP_PAGE_SIZE
+                        with ui.element("div").classes("grid grid-cols-1 lg:grid-cols-2 w-full gap-3"):
+                            for cluster in named[start:start + SIMPLE_GROUP_PAGE_SIZE]:
+                                render_row(cluster)
+
+        if visible_faces:
+            async def load_faces():
+                try:
+                    thumbnails, errors, photo_details = await storage_io_bound(
+                        prepare_face_page, [face_id for face_id, _, _ in visible_faces]
+                    )
+                except Exception as exc:
+                    if not dialog_closed and current_generation == generation:
+                        for _, _, placeholder in visible_faces:
+                            placeholder.set_text("Face unavailable")
+                        ui.notify(f"Could not load face thumbnails: {exc}", type="negative")
+                    raise
+                if dialog_closed or current_generation != generation:
+                    return
+                for face_id, image, placeholder in visible_faces:
+                    thumbnail = thumbnails.get(face_id)
+                    if thumbnail is None:
+                        placeholder.set_text("Face unavailable")
+                        continue
+                    image.set_source(str(thumbnail))
+                    image.set_visibility(True)
+                    placeholder.set_visibility(False)
+                    if face_id in photo_details:
+                        add_face_photo_preview(image, *photo_details[face_id])
+                if errors:
+                    ui.notify(f"Could not load {len(errors)} face thumbnail(s). Check the console for details.",
+                              type="warning")
+
+            with client.layout:
+                ui.timer(0.01, load_faces, once=True)
+
+        target = inputs.get(focus_key) if focus_key is not None else None
+        if target is None and focus_default and unnamed:
+            target = inputs.get(group_key(unnamed[(unnamed_page - 1) * SIMPLE_GROUP_PAGE_SIZE]))
+        if target is not None:
+            async def focus_input():
+                if not dialog_closed and current_generation == generation:
+                    target.run_method("focus")
+            with client.layout:
+                ui.timer(0.1, focus_input, once=True)
+
+    with dialog, ui.card().classes(NAME_PEOPLE_CARD_CLASSES):
+        with ui.row().classes("w-full items-center justify-between no-wrap"):
+            ui.label("Name People").classes("text-h6")
+            ui.button("Delete All Unnamed Groups", on_click=lambda: confirm_delete_all_unnamed_groups(
+                clusters, refresh_groups, lambda: refreshing or dialog_closed
+            ), color="negative").props("flat no-caps")
+            ui.button("Advanced", on_click=lambda: open_advanced()).props("flat no-caps")
+            ui.button(icon="close", on_click=dialog.close).props('flat round dense aria-label="Close"')
+        ui.label(
+            "Enter a name and press Enter to name the whole group. Use Review faces to select "
+            "individual faces. Deleting a group does not delete photos."
+        ).classes("text-caption")
+        status = ui.label().classes("text-caption")
+        retry = ui.button("Retry updating groups", on_click=lambda: refresh_groups(
+            pending_focus, focus_index=pending_focus_index
+        )).props("flat no-caps")
+        retry.set_visibility(False)
+        content = ui.column().classes("w-full gap-3 grow min-h-0 overflow-y-auto")
+        render_groups(focus_default=True)
+
+    if is_closed():
+        dialog.delete()
+        return
+    dialog.open()
+    mark_open()
+    loading.close()
+
+
+async def render_name_people(data, loading, is_closed, mark_open, release, initial_group_page=1,
+                             focus_group=None):
     clusters, skip_confirmation, face_page_size, initial_open_groups, people_names, suggestions, initial_pages = data
     group_page_count = max(1, (len(clusters) + GROUP_PAGE_SIZE - 1) // GROUP_PAGE_SIZE)
     group_page = min(max(1, initial_group_page), group_page_count)
@@ -586,15 +997,22 @@ async def render_name_people(data, loading, is_closed, mark_open, release, initi
         release()
 
     dialog.on("hide", mark_dialog_closed)
-    with dialog, ui.card().classes("w-full max-w-4xl max-h-[85vh] overflow-hidden no-wrap"):
+    with dialog, ui.card().classes(NAME_PEOPLE_CARD_CLASSES):
         with ui.row().classes("w-full items-center justify-between no-wrap"):
-            ui.label("Name People").classes("text-h6")
+            ui.label("Name People - Advanced").classes("text-h6")
+            def open_simple_view():
+                dialog.close()
+                open_name_people(simple=True)
+            ui.button("Delete All Unnamed Groups", on_click=lambda: confirm_delete_all_unnamed_groups(
+                clusters, refresh_groups, lambda: refreshing or dialog_closed
+            ), color="negative").props("flat no-caps")
+            ui.button("Simple view", on_click=open_simple_view).props("flat no-caps")
             ui.button(icon="close", on_click=dialog.close).props(
                 'flat round dense aria-label="Close"'
             ).tooltip("Close")
         ui.label(
-            "Tick the faces that belong to one person, type or pick a name, then click the "
-            "name button. With nothing ticked, the name applies to the whole group. "
+            "Select the faces that belong to one person, type or pick a name, then click the "
+            "name button. With nothing selected, the name applies to the whole group. "
             "Selections remain when changing pages. Hover over a face to preview its photo and folder; "
             "click the folder path in the preview to show the photo in File Explorer. "
             "Deleting faces does not delete photos."
@@ -624,7 +1042,7 @@ async def render_name_people(data, loading, is_closed, mark_open, release, initi
         retry_button = ui.button("Retry updating groups", on_click=lambda: refresh_groups()).props("flat no-caps")
         retry_button.set_visibility(False)
 
-        with ui.column().classes("w-full gap-4 overflow-y-auto") as groups_container:
+        with ui.column().classes("w-full gap-4 grow min-h-0 overflow-y-auto") as groups_container:
             def render_group(cluster, open_initially):
                 cluster_id = cluster["cluster_id"]
                 group_label = f"Group {cluster_id + 1}" if cluster_id is not None else "Group"
@@ -912,6 +1330,7 @@ async def render_name_people(data, loading, is_closed, mark_open, release, initi
                         except (ValueError, sqlite3.Error) as exc:
                             ui.notify(f"Could not move faces: {exc}", type="negative")
                             return
+                        state["name"] = person_name or ""
                         ui.notify(f"Assigned {len(selected)} face(s) to '{name}'")
                         refresh_groups()
 
@@ -1002,7 +1421,7 @@ async def render_name_people(data, loading, is_closed, mark_open, release, initi
                         key = (cluster["cluster_id"], cluster["person_id"])
                         render_group(
                             cluster,
-                            open_initially=key in auto_open_keys or (
+                            open_initially=key == focus_group or key in auto_open_keys or (
                                 cluster["person_id"] is None and index < initial_open_groups
                             ),
                         )
@@ -1241,14 +1660,14 @@ def open_settings():
                             list(FACE_PAGE_SIZE_OPTIONS), label="Face Page Size", value=face_page_size,
                         ).classes("w-64 max-w-full settings-select")
                         ui.label(
-                            "Maximum number of face thumbnails shown per page in each group."
+                            "Maximum number of face thumbnails shown per page in each group in Advanced view."
                         ).classes("text-caption text-gray-400")
                     with ui.column().classes("w-full gap-1"):
                         open_groups_control = ui.select(
                             list(INITIAL_OPEN_GROUPS_OPTIONS), label="Initial Open Groups", value=initial_open_groups,
                         ).classes("w-64 max-w-full settings-select")
                         ui.label(
-                            "Maximum number of unnamed groups opened automatically in Name People."
+                            "Maximum number of unnamed groups opened automatically in Advanced view."
                         ).classes("text-caption text-gray-400")
                     with ui.column().classes("w-full gap-1"):
                         skip_confirmation = ui.switch(
@@ -1453,7 +1872,7 @@ def main_page():
     with ui.header().classes("app-header items-center gap-3 flex-wrap"):
         ui.button("Add Folder", on_click=add_folder, icon="folder")
         ui.button("Index Folders", on_click=index_folders, icon="storage")
-        ui.button("Name People", on_click=open_name_people, icon="face")
+        ui.button("Name People", on_click=lambda: open_name_people(simple=True), icon="face")
         ui.button("Settings", on_click=open_settings, icon="settings")
 
         global photo_count_label
@@ -1605,7 +2024,8 @@ startup.report("Opening Photo Search...")
 app.native.on("shown", window_ready.window_shown)
 app.native.on("loaded", window_ready.window_loaded)
 ui.run(
-    title=f"Photo Search v{APP_VERSION}",
+    title=f"Snowfox Ninja Photo Search v{APP_VERSION}",
+    favicon=Path(__file__).resolve().parent / "images" / "snowfoxninjalogo.ico",
     native=True,
     window_size=(1440, 1020),
     fullscreen=False,

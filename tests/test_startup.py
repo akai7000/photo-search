@@ -92,6 +92,7 @@ class StartupTests(unittest.TestCase):
             thread.side_effect = lambda target, daemon: MagicMock(start=target)
             startup_splash.main()
             root.overrideredirect.assert_called_once_with(True)
+            canvas.create_rectangle.assert_not_called()
             logo.assert_called_once_with(root)
             canvas.create_image.assert_called_once_with(24, 58, image=logo.return_value, anchor="nw")
             canvas.create_text.assert_any_call(
@@ -176,12 +177,32 @@ class StartupTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         build = runpy.run_path(str(root / "packaging" / "build_windows.py"))
         models = [root / "yunet.onnx", root / "sface.onnx"]
+        icon = root / "images" / "snowfoxninjalogo.ico"
         self.assertEqual(build["pyinstaller_assets"](models), [
+            "--icon", str(icon),
+            "--add-data", f"{icon};images",
             "--add-data", f"{startup_splash.LOGO_PATH};images",
             "--add-data", f"{models[0]};models",
             "--add-data", f"{models[1]};models",
         ])
         self.assertTrue(startup_splash.LOGO_PATH.is_file())
+
+    def test_windows_icon_contains_transparent_multi_resolution_logo(self):
+        from PIL import Image
+        root = Path(__file__).resolve().parents[1]
+        with Image.open(root / "images" / "snowfoxninjalogo.ico") as icon:
+            self.assertTrue({(16, 16), (32, 32), (48, 48), (256, 256)} <= icon.ico.sizes())
+            image = icon.ico.getimage((256, 256))
+            self.assertEqual(image.mode, "RGBA")
+            self.assertEqual(image.getpixel((0, 0))[3], 0)
+            with Image.open(root / "images" / "sfn_picturesearch_icon-removebg-preview.png") as source:
+                source = source.convert("RGBA")
+                source = source.crop(source.getchannel("A").getbbox())
+            extent = max(source.size) + 32
+            expected = Image.new("RGBA", (extent, extent))
+            expected.alpha_composite(source, ((extent - source.width) // 2, (extent - source.height) // 2))
+            expected.thumbnail((256, 256), Image.Resampling.LANCZOS, reducing_gap=None)
+            self.assertEqual(image.tobytes(), expected.tobytes())
 
     def test_missing_logo_is_reported_without_preventing_splash(self):
         root = MagicMock()

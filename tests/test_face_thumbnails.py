@@ -390,6 +390,38 @@ class FaceThumbnailTests(unittest.TestCase):
             self.assertEqual([call.kwargs["value"] for call in self.ui.expansion.call_args_list],
                              [True, True, False, True, False])
 
+    def test_splitting_named_group_keeps_original_name_for_remaining_faces(self):
+        source = self.root / "photo.jpg"
+        Image.new("RGB", (50, 50), "red").save(source)
+        first = self.insert_face(source)
+        self.insert_face(source)
+        database.assign_name_to_cluster(0, "Alice")
+        controls = []
+
+        def checkbox(*args, **kwargs):
+            control = MagicMock(value=kwargs.get("value", False))
+            controls.append(control)
+            return control
+
+        self.ui.checkbox.side_effect = checkbox
+        self.ui.expansion.side_effect = lambda *, value: MagicMock(value=True)
+        with patch("core.face_thumbnails.FACE_THUMBNAIL_DIR", self.root / "faces"):
+            self.open_name_people()
+            controls[0].value = True
+            self.ui.input.return_value.on_value_change.call_args.args[0](SimpleNamespace(value="Bob"))
+            self.ui.input.return_value.value = "Bob"
+            save = next(call.kwargs["on_click"] for call in self.ui.button.call_args_list
+                        if call.args and call.args[0] == "Name whole group")
+            save()
+            self.assertIn("Alice", [call.kwargs["value"] for call in self.ui.input.call_args_list[1:]])
+
+        with closing(database.get_connection()) as conn:
+            names = {row["id"]: row["name"] for row in conn.execute(
+                "SELECT faces.id, people.name FROM faces JOIN people ON faces.person_id = people.id"
+            )}
+        self.assertEqual(names[first], "Bob")
+        self.assertEqual(sorted(names.values()), ["Alice", "Bob"])
+
     def test_naming_respects_nondefault_open_group_settings(self):
         source = self.root / "photo.jpg"
         Image.new("RGB", (50, 50), "red").save(source)

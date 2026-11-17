@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -42,6 +43,23 @@ class FaceGroupTests(unittest.TestCase):
         self.assertNotEqual(face_a, face_b)
         self.assertNotIn(b, database.find_photos_by_person_name("Alice"))
 
+    def test_group_representatives_choose_largest_face_per_group(self):
+        _, small = self.add_face("small.jpg", 0)
+        _, large = self.add_face("large.jpg", 0)
+        _, named = self.add_face("named.jpg", 1)
+        conn = database.get_connection()
+        try:
+            conn.execute("UPDATE faces SET bbox_w = 30, bbox_h = 40 WHERE id = ?", (large,))
+            conn.commit()
+        finally:
+            conn.close()
+        database.assign_name_to_cluster(1, "Alice")
+        person_id = next(row["person_id"] for row in database.get_clusters()
+                         if row["person_name"] == "Alice")
+        self.assertEqual(database.get_group_representatives(),
+                         {(0, None): large, (None, person_id): named})
+        self.assertNotEqual(small, large)
+
     def test_wrong_or_stale_selection_is_atomic(self):
         _, face_a = self.add_face("a.jpg", 0)
         _, face_b = self.add_face("b.jpg", 1)
@@ -74,6 +92,71 @@ class FaceGroupTests(unittest.TestCase):
         database.delete_face_group([face], cluster_id=None, person_id=person_id)
         self.assertIsNone(database.find_photos_by_person_name("Alice"))
         self.assertEqual(database.get_clusters(), [])
+
+    def test_delete_all_unnamed_groups_preserves_named_faces_and_ungrouped_faces(self):
+        _, first = self.add_face("a.jpg", 0)
+        _, named = self.add_face("b.jpg", 1)
+        _, ungrouped = self.add_face("c.jpg", None)
+        database.assign_name_to_cluster(1, "Alice")
+        database.get_or_create_person("Unused")
+        conn = database.get_connection()
+        try:
+            conn.execute("UPDATE faces SET cluster_id = 0 WHERE id = ?", (named,))
+            conn.commit()
+        finally:
+            conn.close()
+        groups = [(0, [first])]
+        self.assertEqual(database.delete_all_unnamed_face_groups(groups), [first])
+        self.assertEqual([row["person_name"] for row in database.get_clusters()], ["Alice"])
+        self.assertEqual(database.get_people_names(), ["Alice", "Unused"])
+        self.assertEqual(database.get_photo_count(), 3)
+        conn = database.get_connection()
+        try:
+            self.assertEqual({row["id"] for row in conn.execute("SELECT id FROM faces")}, {named, ungrouped})
+        finally:
+            conn.close()
+
+    def test_delete_all_unnamed_groups_rejects_stale_snapshot_atomically(self):
+        _, first = self.add_face("a.jpg", 0)
+        groups = [(0, [first])]
+        _, second = self.add_face("b.jpg", 1)
+        with self.assertRaises(ValueError):
+            database.delete_all_unnamed_face_groups(groups)
+        self.assertEqual({int(row["face_ids"]) for row in database.get_clusters()}, {first, second})
+
+    def test_delete_all_unnamed_groups_rejects_moved_faces_and_rolls_back_database_failure(self):
+        _, first = self.add_face("a.jpg", 0)
+        _, second = self.add_face("b.jpg", 1)
+        groups = [(0, [first]), (1, [second])]
+        database.assign_name_to_cluster(0, "Alice")
+        with self.assertRaises(ValueError):
+            database.delete_all_unnamed_face_groups(groups)
+        groups = [(row["cluster_id"], [int(face_id) for face_id in row["face_ids"].split(",")])
+                  for row in database.get_clusters() if row["person_id"] is None]
+        conn = database.get_connection()
+        try:
+            conn.execute(
+                "CREATE TRIGGER prevent_delete BEFORE DELETE ON faces "
+                "BEGIN SELECT RAISE(ABORT, 'delete failed'); END"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        with self.assertRaises(sqlite3.IntegrityError):
+            database.delete_all_unnamed_face_groups(groups)
+        self.assertEqual(len(database.get_clusters()), 2)
+        self.assertEqual(database.get_people_names(), ["Alice"])
+
+    def test_new_named_group_does_not_invalidate_unnamed_deletion(self):
+        _, first = self.add_face("a.jpg", 0)
+        groups = [(0, [first])]
+        _, named = self.add_face("b.jpg", 1)
+        database.assign_name_to_cluster(1, "Alice")
+        with self.assertRaises(ValueError):
+            database.delete_all_unnamed_face_groups(groups + [(1, [named])])
+        self.assertEqual(database.delete_all_unnamed_face_groups(groups), [first])
+        self.assertEqual(database.get_people_names(), ["Alice"])
+        self.assertEqual(database.get_clusters()[0]["face_ids"], str(named))
 
     def test_delete_selected_faces_preserves_other_detections_and_photos(self):
         first_photo, first_face = self.add_face("a.jpg", 0)

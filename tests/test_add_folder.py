@@ -61,6 +61,10 @@ class AddFolderTests(unittest.IsolatedAsyncioTestCase):
         self.refresh_folders = self.state["refresh_folders"]
         self.state["refresh_folders"] = MagicMock()
 
+    async def test_native_window_uses_snowfox_icon(self):
+        icon = Path(__file__).resolve().parents[1] / "images" / "snowfoxninjalogo.ico"
+        self.assertEqual(self.ui.run.call_args.kwargs["favicon"], icon)
+
     async def test_add_folder_persists_and_ignores_duplicates(self):
         self.dialog.return_value = ["C:\\Photos"]
 
@@ -503,10 +507,10 @@ class AddFolderTests(unittest.IsolatedAsyncioTestCase):
         for control in controls:
             control.classes.assert_called_once_with("w-64 max-w-full settings-select")
         self.ui.label.assert_any_call(
-            "Maximum number of face thumbnails shown per page in each group."
+            "Maximum number of face thumbnails shown per page in each group in Advanced view."
         )
         self.ui.label.assert_any_call(
-            "Maximum number of unnamed groups opened automatically in Name People."
+            "Maximum number of unnamed groups opened automatically in Advanced view."
         )
 
     async def test_settings_sections_do_not_shrink_inside_scroll_area(self):

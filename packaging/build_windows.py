@@ -15,7 +15,10 @@ from core.face_models import MODEL_SPECS, ensure_models, verify_model
 
 
 def pyinstaller_assets(models):
+    icon = ROOT / "images" / "snowfoxninjalogo.ico"
     return [
+        "--icon", str(icon),
+        "--add-data", f"{icon};images",
         "--add-data", f"{ROOT / 'images' / 'snowfoxninjalogo.png'};images",
         *[item for model in models for item in ("--add-data", f"{model};models")],
     ]

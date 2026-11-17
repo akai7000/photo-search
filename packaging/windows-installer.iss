@@ -29,6 +29,7 @@ OutputBaseFilename=PhotoSearch-{#AppVersion}-{#Variant}-Setup
 Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\images\snowfoxninjalogo.ico
 UninstallDisplayIcon={app}\{#AppExe}
 
 [Tasks]
