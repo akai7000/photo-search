@@ -2,7 +2,6 @@
 
 import argparse
 import importlib.metadata
-import importlib.util
 import runpy
 import shutil
 import subprocess
@@ -10,13 +9,23 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from core.face_models import MODEL_SPECS, ensure_models, verify_model
 
 
-def pyinstaller_assets(meanshape):
+def pyinstaller_assets(models):
     return [
         "--add-data", f"{ROOT / 'images' / 'snowfoxninjalogo.png'};images",
-        "--add-data", f"{meanshape};objects",
+        *[item for model in models for item in ("--add-data", f"{model};models")],
     ]
+
+
+def torchvision_assets(directory):
+    libraries = sorted(path for path in directory.iterdir() if path.suffix.lower() in {".pyd", ".dll"})
+    if not any(path.name.startswith("_C") and path.suffix.lower() == ".pyd" for path in libraries):
+        raise RuntimeError(f"torchvision native extension not found in {directory}")
+    return [item for path in libraries for item in ("--add-binary", f"{path};torchvision")]
 
 
 def collect_notices(destination):
@@ -42,6 +51,21 @@ def collect_notices(destination):
                 output = target.joinpath(*parts[1:])
                 output.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, output)
+    for name in ("YuNet-LICENSE.txt", "SFace-LICENSE.txt"):
+        shutil.copy2(ROOT / "packaging" / "model_licenses" / name, destination / name)
+
+
+def validate_bundle(bundle):
+    models_dir = bundle / "_internal" / "models"
+    expected = {models_dir / name for name in MODEL_SPECS}
+    for path in bundle.rglob("*"):
+        if path.is_file() and path.suffix.lower() in {".db", ".sqlite", ".sqlite3", ".onnx", ".pt", ".pth"}:
+            if path not in expected:
+                raise RuntimeError(f"Unexpected data or model file in bundle: {path}")
+        if path.is_dir() and path.name.lower() in {"thumbnails", "face_thumbnails"}:
+            raise RuntimeError(f"Unexpected data directory in bundle: {path}")
+    for name, (_, digest) in MODEL_SPECS.items():
+        verify_model(models_dir / name, digest)
 
 
 def main():
@@ -55,21 +79,14 @@ def main():
         parser.error("Run on Windows and provide an existing Inno Setup compiler with --iscc")
 
     import torch
-    import onnxruntime
+    import torchvision
 
-    providers = onnxruntime.get_available_providers()
     if args.variant == "CPU":
-        if torch.version.cuda is not None or "CUDAExecutionProvider" in providers:
-            parser.error("CPU builds require CPU-only PyTorch and ONNX Runtime")
-    elif torch.version.cuda != "12.4" or onnxruntime.__version__ != "1.20.2" or "CUDAExecutionProvider" not in providers:
-        parser.error("GPU builds require PyTorch CUDA 12.4 and onnxruntime-gpu 1.20.2")
-
-    insightface = importlib.util.find_spec("insightface")
-    if insightface is None or insightface.origin is None:
-        parser.error("InsightFace must be installed in the build environment")
-    meanshape = Path(insightface.origin).parent / "data" / "objects" / "meanshape_68.pkl"
-    if not meanshape.is_file():
-        parser.error(f"Required InsightFace asset not found: {meanshape}")
+        if torch.version.cuda is not None:
+            parser.error("CPU builds require CPU-only PyTorch")
+    elif torch.version.cuda != "12.4":
+        parser.error("GPU builds require PyTorch CUDA 12.4")
+    models = ensure_models(ROOT / "models", download=True)
 
     work = args.work.resolve() / args.variant
     dist = work / "dist"
@@ -80,22 +97,17 @@ def main():
     subprocess.run([
         sys.executable, "-m", "PyInstaller", "--noconfirm", "--onedir", "--windowed",
         "--name", exe_name,
-        *pyinstaller_assets(meanshape),
+        *pyinstaller_assets(models),
+        *torchvision_assets(Path(torchvision.__file__).parent),
         "--collect-data", "open_clip",
         "--copy-metadata", "nicegui",
         "--copy-metadata", "open_clip_torch",
-        "--copy-metadata", "insightface",
         "--distpath", str(dist), "--workpath", str(work / "build"),
         "--specpath", str(spec), str(ROOT / "main.py"),
     ], check=True, cwd=ROOT)
 
     bundle = dist / exe_name
-    forbidden_extensions = {".db", ".sqlite", ".sqlite3", ".onnx", ".pt", ".pth"}
-    for path in bundle.rglob("*"):
-        if (path.is_file() and path.suffix.lower() in forbidden_extensions) or (
-            path.is_dir() and path.name.lower() in {"thumbnails", "face_thumbnails"}
-        ):
-            raise RuntimeError(f"Unexpected data or model file in bundle: {path}")
+    validate_bundle(bundle)
     collect_notices(bundle / "third_party_licenses")
     version = runpy.run_path(str(ROOT / "core" / "version.py"))["APP_VERSION"]
     subprocess.run([

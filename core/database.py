@@ -6,6 +6,7 @@ from core.data_location import DEFAULT_DATA_DIR, load_data_directory
 
 # Database path
 DB_PATH = load_data_directory() / "photo_search.db"
+FACE_EMBEDDING_VERSION = "yunet-2026may-sface-2021dec"
 
 def get_connection(path: Path | None = None):
     """Return a connection to the SQLite database."""
@@ -107,26 +108,22 @@ def _init_db(conn):
     if "total_files" not in folder_columns:
         cursor.execute("ALTER TABLE folders ADD COLUMN total_files INTEGER")
 
+    cursor.execute("CREATE TABLE IF NOT EXISTS index_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    version = cursor.execute(
+        "SELECT value FROM index_metadata WHERE key = 'face_embedding_version'"
+    ).fetchone()
+    if version is not None and version["value"] != FACE_EMBEDDING_VERSION:
+        raise ValueError(f"Unsupported face embedding version: {version['value']}")
+    if version is None:
+        cursor.execute("DELETE FROM faces")
+        cursor.execute("UPDATE photos SET modified_time = NULL")
+        cursor.execute("UPDATE folders SET indexed = 0")
+        cursor.execute(
+            "INSERT INTO index_metadata (key, value) VALUES ('face_embedding_version', ?)",
+            (FACE_EMBEDDING_VERSION,),
+        )
     if remove_legacy_backend_column:
-        legacy_photos = cursor.execute(
-            "SELECT COUNT(*) FROM photos WHERE face_backend IS NOT 'insightface'"
-        ).fetchone()[0]
-        if legacy_photos:
-            cursor.execute(
-                "UPDATE photos SET modified_time = NULL "
-                "WHERE face_backend IS NOT 'insightface'"
-            )
-            cursor.execute(
-                "DELETE FROM faces WHERE photo_id IN "
-                "(SELECT id FROM photos WHERE face_backend IS NOT 'insightface')"
-            )
-            cursor.execute(
-                "DELETE FROM people WHERE NOT EXISTS "
-                "(SELECT 1 FROM faces WHERE faces.person_id = people.id)"
-            )
-            cursor.execute("UPDATE folders SET indexed = 0")
         cursor.execute("ALTER TABLE photos DROP COLUMN face_backend")
-
     cursor.execute("DELETE FROM settings WHERE key = 'face_backend'")
 
     # Indexes for performance
@@ -823,7 +820,8 @@ def get_folder_progress(path: str) -> dict:
             "SELECT indexed, total_files, indexed_at FROM folders WHERE path = ?", (path,)
         ).fetchone()
         indexed = conn.execute(
-            "SELECT COUNT(*) FROM photos WHERE path >= ? AND path < ?", (prefix, prefix_end)
+            "SELECT COUNT(*) FROM photos WHERE path >= ? AND path < ? AND modified_time IS NOT NULL",
+            (prefix, prefix_end),
         ).fetchone()[0]
     finally:
         conn.close()

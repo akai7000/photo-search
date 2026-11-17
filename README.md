@@ -31,7 +31,7 @@ Search for a description or a person's name and browse matching photos.
 
 ### Name People
 
-Review detected face groups and assign names.
+Review detected face groups and assign names. Press Enter in a name field to name the selected faces, or the whole group if none are selected.
 
 ![Name People dialog showing sample face groups](images/screenshots/name-people-demo-0.4.png)
 
@@ -39,12 +39,16 @@ When run from source, the application stores its SQLite index, settings, and gen
 
 ## Windows installers
 
-Choose the **CPU** installer for any supported PC, or the **GPU** installer for an NVIDIA GPU with a compatible driver. Each installer is a single executable for 64-bit Windows 10 version 1809 or later; Python is not required on the target PC. The GPU build uses CUDA 12.4 PyTorch and CUDA 12 ONNX Runtime. If the driver or GPU is incompatible, processing may fall back to the CPU. Microsoft Edge WebView2 Runtime is required for the native window.
+Choose the **CPU** installer for any supported PC, or the **GPU** installer for an NVIDIA GPU with a compatible driver. Each installer is a single executable for 64-bit Windows 10 version 1809 or later; Python is not required on the target PC. The GPU build uses CUDA 12.4 PyTorch for OpenCLIP; YuNet and SFace run on CPU in both builds. If the driver or GPU is incompatible, OpenCLIP may fall back to the CPU. Microsoft Edge WebView2 Runtime is required for the native window.
 
 - [Download the CPU installer (v0.4)](https://pub-5c62851ff87d40acaeee8eb31d082ac7.r2.dev/v0.4/PhotoSearch-0.4-CPU-Setup.exe)
 - [Download the NVIDIA GPU installer (v0.4)](https://pub-5c62851ff87d40acaeee8eb31d082ac7.r2.dev/v0.4/PhotoSearch-0.4-GPU-Setup.exe)
 
-The installers do not contain a photo index, thumbnails, or AI model weights. An internet connection and additional disk space are needed to download models when they are first used. OpenCLIP uses the Hugging Face cache. InsightFace stores its model under `%USERPROFILE%\.insightface`. Review the [InsightFace model license](https://github.com/deepinsight/insightface/tree/master/python-package#license): its pretrained models are for **non-commercial research only**, including when automatically downloaded.
+**The linked v0.4 installers predate the YuNet/SFace change and still use InsightFace's non-commercial buffalo_l weights.** Build and publish new installers before distributing the replacement.
+
+New builds bundle the YuNet and SFace model weights and their license texts; they do not bundle a photo index, thumbnails, or OpenCLIP weights. OpenCLIP still downloads its model into the Hugging Face cache on first use. YuNet is MIT licensed and SFace is Apache 2.0 licensed; see `third_party_licenses` in the installed application.
+
+When opening an older index, the app discards incompatible face detections and associations with names, marks photos and folders for re-indexing, and retains the photos, OpenCLIP embeddings, and folder settings. Select **Index Folders** to regenerate faces; review and assign names again. Original photos are not modified. Back up the data directory first if you need to preserve the old face assignments.
 
 The installed app stores its data-directory selection and diagnostic log under `%LOCALAPPDATA%\Photo Search`. The log can contain local paths; review it before sharing. Uninstalling the application does not remove this directory, the model caches, or original photos. An existing source-run index is not automatically moved: select its data directory in Settings if you want to use it. Close one edition before opening the other because they share the same data directory. The installers are unsigned, so Windows may display a publisher warning.
 
@@ -61,6 +65,7 @@ python -m venv venv
 ```
 
 For GPU acceleration, install a PyTorch build compatible with your CUDA setup if the default installation does not provide one. Model loading can take time on the first startup.
+The first face indexing run downloads the pinned YuNet and SFace models into `models/` and verifies their SHA-256 hashes. Source runs need internet access for that initial download.
 
 ## Building Windows installers
 
@@ -73,18 +78,16 @@ py -3.13 -m venv .venv-cpu
 .\.venv-cpu\Scripts\python.exe packaging\build_windows.py CPU --iscc "C:\path\to\ISCC.exe"
 ```
 
-For the GPU environment, replace the CPU PyTorch installation with the CUDA 12.4 build, then replace the CPU ONNX Runtime installed by the requirements with the GPU version. Do not leave both ONNX Runtime distributions installed:
+For the GPU environment, replace the CPU PyTorch installation with the CUDA 12.4 build:
 
 ```powershell
 py -3.13 -m venv .venv-gpu
 .\.venv-gpu\Scripts\python.exe -m pip install torch==2.6.0+cu124 torchvision==0.21.0+cu124 --index-url https://download.pytorch.org/whl/cu124
 .\.venv-gpu\Scripts\python.exe -m pip install -r packaging\requirements-windows.txt
-.\.venv-gpu\Scripts\python.exe -m pip uninstall -y onnxruntime
-.\.venv-gpu\Scripts\python.exe -m pip install onnxruntime-gpu==1.20.2
 .\.venv-gpu\Scripts\python.exe packaging\build_windows.py GPU --iscc "C:\path\to\ISCC.exe"
 ```
 
-InsightFace declares the CPU `onnxruntime` package as a dependency, so `pip check` may report it missing in the GPU environment even though the GPU distribution supplies the same module. The build script checks the selected runtime, rejects bundled database/model files, includes third-party notices, and writes installers to `dist\installers`. Build artifacts can be several gigabytes; allow ample free disk space. Code signing and publication are separate steps.
+The build script downloads and verifies the pinned face models if needed, bundles only those two model files, rejects bundled databases and other model weights, includes third-party notices, and writes installers to `dist\installers`. Build artifacts can be several gigabytes; allow ample free disk space. Code signing and publication are separate steps.
 
 ## Using the application
 
@@ -103,6 +106,44 @@ The **Indexed on** date is displayed in local time and changes only when a scan 
 Removing a searchable folder requires confirmation and removes its indexed photos, faces and generated thumbnails. Photos covered by another searchable folder remain indexed. Original files and saved people are not deleted.
 By default, **Settings > Indexing > Skip Previously Indexed Folders** skips completed folders without checking for new or changed files. Turn it off to rescan those folders and detect changes or regenerate missing thumbnails. Interrupted or failed folders are scanned again. When selected folders overlap, a skipped folder is also excluded from its selected parent.
 
+## Face pipeline benchmark
+
+Run the standalone benchmark from the project directory with an existing CPU or GPU environment:
+
+```powershell
+.\venv-cpu\Scripts\python.exe tools\benchmark_faces.py --index data\photo_search.db --limit 30 --repeat 2 --warmup 2 --output face-benchmark-cpu.json
+```
+
+Alternatively, use `--directory C:\path\to\photos` instead of `--index`; the benchmark recursively selects supported images in sorted order. Index selection uses the first photo IDs and opens the database read-only. Missing images and face-processing errors fail the run rather than being counted as photos without faces. The benchmark does not modify the index.
+
+Results contain image, model, and face-engine SHA-256 hashes, OpenCV runtime details, startup time, face counts, and per-image and aggregate timings. Compare runs only when their dataset fingerprints, image counts, and settings match; a changed index can change the sample. Results include hashes derived from personal photos and machine details, so review them before sharing.
+
+Timings cover the current CPU YuNet + SFace `detect_faces` pipeline, including image decoding, detection and embeddings, but not CLIP, thumbnail generation, database writes, or the complete indexing workflow. Model loading is measured separately; hashing and warmup precede the timed runs, so these are warm-cache timings. Face counts are not an accuracy measure; evaluate recognition quality separately using a labeled photo set.
+
+### YuNet and SFace
+
+The separate OpenCV benchmark does not change the app. Download the [YuNet model](https://github.com/opencv/opencv_zoo/tree/48b10fa505aeb51fbd127fc60a5c660040e823b7/models/face_detection_yunet) and [SFace model](https://github.com/opencv/opencv_zoo/tree/48b10fa505aeb51fbd127fc60a5c660040e823b7/models/face_recognition_sface) from this pinned OpenCV Zoo revision. The models used for the baseline were `face_detection_yunet_2026may.onnx` (SHA-256 `ebafce4e3c118d6554634be5c27ab333b4c047a9a8c3faf1d7cf93101c22f0f0`) and `face_recognition_sface_2021dec.onnx` (SHA-256 `0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79`). Verify the downloaded files with `Get-FileHash` before running:
+
+```powershell
+.\venv-cpu\Scripts\python.exe tools\benchmark_opencv_faces.py --index data\photo_search.db --yunet C:\path\to\face_detection_yunet_2026may.onnx --sface C:\path\to\face_recognition_sface_2021dec.onnx --limit 30 --repeat 2 --warmup 2 --output opencv-full.json
+.\venv-cpu\Scripts\python.exe tools\benchmark_opencv_faces.py --index data\photo_search.db --yunet C:\path\to\face_detection_yunet_2026may.onnx --sface C:\path\to\face_recognition_sface_2021dec.onnx --limit 30 --repeat 2 --warmup 2 --max-dimension 640 --output opencv-640.json
+```
+
+Both request OpenCV's CPU backend, disable OpenCL, and require OpenCV's `FaceDetectorYN` and `FaceRecognizerSF` APIs. The full-resolution run matches the earlier OpenCV configuration; the 640-pixel variant resizes for detection and maps landmarks back to the original image for SFace alignment. Both decode with the app's EXIF-aware Pillow pipeline. OpenCV 5's new graph engine may warn that it ignores the requested target; inspect the installed build before assuming which device is used. Resizing and different detector thresholds affect which faces are found, so speed and face-count comparisons alone do not establish accuracy.
+
+For YuNet + SFace, pass `--score-threshold 0.7` to compare a lower detection threshold; the default is 0.8.
+
+### YuNet and AuraFace
+
+This optional historical benchmark requires separately installing InsightFace and ONNX Runtime in a separate environment; neither is needed by the app. It uses YuNet but computes embeddings with AuraFace. Download only [`glintr100.onnx` from AuraFace-v1](https://huggingface.co/fal/AuraFace-v1/blob/94ee6ceb788a98a88807db884ae1f00d7e070d23/glintr100.onnx); the benchmarked file's SHA-256 is `a7933ea5330113b01c9b60351d8f4c33003f145d8470ac5f0e52ee2effe25c60`. Review the model's provenance and commercial-use terms separately before distributing it.
+
+```powershell
+.\venv-gpu\Scripts\python.exe tools\benchmark_auraface.py --index data\photo_search.db --yunet C:\path\to\face_detection_yunet_2026may.onnx --auraface C:\path\to\glintr100.onnx --provider CUDAExecutionProvider --limit 30 --repeat 2 --warmup 2 --output auraface-gpu.json
+.\venv-cpu\Scripts\python.exe tools\benchmark_auraface.py --index data\photo_search.db --yunet C:\path\to\face_detection_yunet_2026may.onnx --auraface C:\path\to\glintr100.onnx --provider CPUExecutionProvider --limit 30 --repeat 2 --warmup 2 --output auraface-cpu.json
+```
+
+Add `--max-dimension 640` to benchmark resized detection. YuNet is requested on CPU; `--provider` controls AuraFace recognition only and fails if the requested provider is unavailable or not first in its session. ONNX Runtime may still assign individual operators to CPU. The output records both model hashes and the recognition session providers.
+
 ## Tests
 
 Run the unit tests from the project directory:
@@ -117,5 +158,6 @@ Run the unit tests from the project directory:
 - `core/` — database, indexing, search, face processing, previews, and startup.
 - `tests/` — unit and UI workflow tests.
 - `tools/extract_faces.py` — regenerate missing face thumbnails from the local index.
+- `tools/benchmark_faces.py`, `tools/benchmark_opencv_faces.py`, `tools/benchmark_auraface.py` — compare face-processing pipelines.
 
 The `data/` directory, virtual environment, and other local generated files are excluded from version control.

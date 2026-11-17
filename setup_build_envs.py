@@ -31,13 +31,10 @@ def setup_cpu_env():
     if run_in_venv("venv-cpu", "-m", "pip", "install", "--upgrade", "pip") != 0:
         return False
     
-    # Install CPU-only PyTorch and onnxruntime
+    # Install CPU-only PyTorch
     if run_in_venv("venv-cpu", "-m", "pip", "install", 
                    "torch", "torchvision", "torchaudio",
                    "--index-url", "https://download.pytorch.org/whl/cpu") != 0:
-        return False
-    
-    if run_in_venv("venv-cpu", "-m", "pip", "install", "onnxruntime==1.20.1") != 0:
         return False
     
     # Install other dependencies from requirements.txt
@@ -67,10 +64,6 @@ def setup_gpu_env():
     if run_in_venv("venv-gpu", "-m", "pip", "install",
                    "torch", "torchvision", "torchaudio",
                    "--index-url", "https://download.pytorch.org/whl/cu124") != 0:
-        return False
-    
-    # Install onnxruntime-gpu
-    if run_in_venv("venv-gpu", "-m", "pip", "install", "onnxruntime-gpu==1.20.2") != 0:
         return False
     
     # Install other dependencies from requirements.txt

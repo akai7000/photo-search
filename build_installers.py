@@ -71,20 +71,18 @@ def build_variant(variant):
     if result.returncode != 0:
         if variant == "CPU":
             print(f"\n[ERROR] CPU build failed. This usually means:")
-            print("  - GPU versions of PyTorch/ONNX Runtime are installed")
+            print("  - GPU PyTorch is installed")
             print("  - CPU builds require CPU-only versions")
             print("\n[INFO] To fix, install CPU-only packages:")
-            print("  pip uninstall torch onnxruntime -y")
+            print("  pip uninstall torch -y")
             print("  pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu")
-            print("  pip install onnxruntime==1.20.1")
         elif variant == "GPU":
             print(f"\n[ERROR] GPU build failed. This usually means:")
-            print("  - CPU versions of PyTorch/ONNX Runtime are installed")
+            print("  - CPU PyTorch is installed")
             print("  - GPU builds require CUDA 12.4 versions")
             print("\n[INFO] To fix, install GPU packages:")
-            print("  pip uninstall torch onnxruntime -y")
+            print("  pip uninstall torch -y")
             print("  pip install torch==2.0.0 torchvision==0.15.0 torchaudio==2.0.0 --index-url https://download.pytorch.org/whl/cu124")
-            print("  pip install onnxruntime-gpu==1.20.2")
     
     return result.returncode == 0
 

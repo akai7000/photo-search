@@ -2,8 +2,7 @@ nicegui>=3.0
 torch
 torchvision
 open-clip-torch
-insightface
-onnxruntime-gpu==1.22.0
+opencv-python==5.0.0.93
 faiss-cpu
 pillow
 exifread

@@ -2,7 +2,7 @@ import numpy as np
 from sklearn.cluster import DBSCAN
 from core.database import get_connection
 
-def cluster_faces(eps: float = 0.4, min_samples: int = 2):
+def cluster_faces(eps: float = 0.35, min_samples: int = 2):
     """
     Cluster face embeddings using DBSCAN.
     Updates cluster IDs for faces that have not yet been named.

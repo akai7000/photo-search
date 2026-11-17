@@ -175,10 +175,11 @@ class StartupTests(unittest.TestCase):
     def test_windows_bundle_includes_splash_logo(self):
         root = Path(__file__).resolve().parents[1]
         build = runpy.run_path(str(root / "packaging" / "build_windows.py"))
-        meanshape = root / "meanshape_68.pkl"
-        self.assertEqual(build["pyinstaller_assets"](meanshape), [
+        models = [root / "yunet.onnx", root / "sface.onnx"]
+        self.assertEqual(build["pyinstaller_assets"](models), [
             "--add-data", f"{startup_splash.LOGO_PATH};images",
-            "--add-data", f"{meanshape};objects",
+            "--add-data", f"{models[0]};models",
+            "--add-data", f"{models[1]};models",
         ])
         self.assertTrue(startup_splash.LOGO_PATH.is_file())
 

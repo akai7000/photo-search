@@ -129,21 +129,45 @@ class DataLocationTests(unittest.TestCase):
             conn.execute("INSERT INTO faces (photo_id, person_id, embedding) VALUES (2, 1, X'02')")
             conn.commit()
         database.init_db(path)
+        database.init_db(path)
         with closing(database.get_connection(path)) as conn:
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(photos)")}
-            legacy_photo = conn.execute(
-                "SELECT modified_time FROM photos WHERE path = 'legacy.jpg'"
-            ).fetchone()
+            photos = conn.execute("SELECT modified_time FROM photos ORDER BY id").fetchall()
             faces = conn.execute("SELECT photo_id FROM faces").fetchall()
             folder = conn.execute("SELECT indexed FROM folders WHERE path = 'photos'").fetchone()
             setting = conn.execute(
                 "SELECT value FROM settings WHERE key = 'face_backend'"
             ).fetchone()
         self.assertNotIn("face_backend", columns)
-        self.assertIsNone(legacy_photo["modified_time"])
-        self.assertEqual([row["photo_id"] for row in faces], [1])
+        self.assertEqual([row["modified_time"] for row in photos], [None, None])
+        self.assertEqual(faces, [])
         self.assertEqual(folder["indexed"], 0)
         self.assertIsNone(setting)
+
+    def test_unknown_face_model_is_rejected_without_deleting_faces(self):
+        path = self.root / "version.db"
+        database.init_db(path)
+        with closing(database.get_connection(path)) as conn:
+            conn.execute("INSERT INTO photos (path) VALUES ('photo.jpg')")
+            conn.execute("INSERT INTO faces (photo_id, embedding) VALUES (1, X'01')")
+            conn.execute("UPDATE index_metadata SET value = 'future-model' WHERE key = 'face_embedding_version'")
+            conn.commit()
+        with self.assertRaisesRegex(ValueError, "Unsupported face embedding version"):
+            database.init_db(path)
+        with closing(database.get_connection(path)) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0], 1)
+
+    def test_existing_sface_index_is_not_migrated_again(self):
+        path = self.root / "current.db"
+        database.init_db(path)
+        with closing(database.get_connection(path)) as conn:
+            conn.execute("INSERT INTO photos (path, modified_time) VALUES ('photo.jpg', 10)")
+            conn.execute("INSERT INTO faces (photo_id, embedding) VALUES (1, X'01')")
+            conn.commit()
+        database.init_db(path)
+        with closing(database.get_connection(path)) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT modified_time FROM photos").fetchone()[0], 10)
 
     def test_unavailable_selected_directory_is_not_recreated(self):
         missing = self.root / "missing" / "photo_search.db"

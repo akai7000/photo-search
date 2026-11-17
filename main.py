@@ -70,10 +70,10 @@ folders_container = None
 folders_header = None
 folders_summary = None
 photo_count_label = None
-FACE_PAGE_SIZE = 24
+FACE_PAGE_SIZE = 30
 INITIAL_OPEN_GROUPS = 3
 GROUP_PAGE_SIZE = 20
-FACE_PAGE_SIZE_OPTIONS = (24, 30, 32, 40, 48, 50, 60)
+FACE_PAGE_SIZE_OPTIONS = (30, 40, 50, 60)
 INITIAL_OPEN_GROUPS_OPTIONS = tuple(range(1, 11))
 data_switching = False
 storage_jobs = 0
@@ -169,16 +169,17 @@ def confirm_remove_folder(folder, dialog, confirmed_database):
     if search_results_container is not None:
         search_results_container.clear()
     refresh_photo_count()
-    refresh_folders()
-    if errors:
-        for error in errors:
-            logging.error("Folder removal: %s", error)
-        ui.notify(
-            f"Folder removed, but {len(errors)} generated thumbnail(s) could not be removed. "
-            "See the application log for details.", type="warning"
-        )
-    else:
-        ui.notify(f"Removed folder and {count} indexed photo(s).")
+    with ui.context.client.layout:
+        refresh_folders()
+        if errors:
+            for error in errors:
+                logging.error("Folder removal: %s", error)
+            ui.notify(
+                f"Folder removed, but {len(errors)} generated thumbnail(s) could not be removed. "
+                "See the application log for details.", type="warning"
+            )
+        else:
+            ui.notify(f"Removed folder and {count} indexed photo(s).")
 
 STATUS_COLORS = {"complete": "positive", "partial": "warning", "not": "grey"}
 index_progress = {"done": 0, "total": 0, "current": "", "root": "", "folder": "", "active": False}
@@ -974,6 +975,7 @@ async def render_name_people(data, loading, is_closed, mark_open, release, initi
                                 ui.button("Delete faces", on_click=confirm, color="negative")
                         confirmation.open()
 
+                    name_input.on("keydown.enter", apply_name)
                     with ui.row():
                         name_button.append(ui.button("Name whole group", on_click=apply_name, color="primary"))
                         ui.button("Delete selected", on_click=lambda: confirm_delete(True), color="negative")
@@ -1605,7 +1607,7 @@ app.native.on("loaded", window_ready.window_loaded)
 ui.run(
     title=f"Photo Search v{APP_VERSION}",
     native=True,
-    window_size=(1300, 900),
+    window_size=(1440, 1020),
     fullscreen=False,
     reload=False,
     port=native.find_open_port()

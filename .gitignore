@@ -1,5 +1,6 @@
 # Photo index, settings, generated thumbnails and previews.
 /data/
+/models/
 /.photo-search-config.json
 
 # Python environments and generated files.
@@ -29,3 +30,6 @@ htmlcov/
 *.sqlite
 *.sqlite3
 *.sqlite3-*
+
+# Sales and marketing data.
+MARKETING.md

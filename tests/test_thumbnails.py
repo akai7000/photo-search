@@ -145,7 +145,7 @@ class ThumbnailTests(unittest.TestCase):
                 "SELECT thumbnail_path FROM photos WHERE path = ?", (str(source),)
             ).fetchone()[0], expected)
 
-    def test_database_migration_forces_non_insightface_faces_to_be_reindexed(self):
+    def test_database_migration_forces_legacy_faces_to_be_reindexed(self):
         source = self.photos / "photo.png"
         self.make_photo(source)
         database.add_folder(str(self.photos))
@@ -158,6 +158,7 @@ class ThumbnailTests(unittest.TestCase):
         database.set_folder_total(str(self.photos), 1)
         database.mark_folder_indexed(str(self.photos))
         with closing(database.get_connection()) as conn:
+            conn.execute("DELETE FROM index_metadata WHERE key = 'face_embedding_version'")
             conn.execute(
                 "ALTER TABLE photos ADD COLUMN face_backend TEXT NOT NULL DEFAULT 'insightface'"
             )
@@ -167,6 +168,7 @@ class ThumbnailTests(unittest.TestCase):
             conn.commit()
 
         database.init_db()
+        self.assertEqual(database.get_folder_status(str(self.photos)), "Not indexed")
 
         with patch.object(self.scanner, "detect_faces", return_value=[]) as detect:
             result = self.scanner.scan_folders(
@@ -186,6 +188,21 @@ class ThumbnailTests(unittest.TestCase):
         self.assertNotIn("face_backend", columns)
         self.assertEqual(faces, 0)
         self.assertEqual(row["modified_time"], source.stat().st_mtime)
+
+    def test_face_failure_does_not_replace_existing_indexed_data(self):
+        source = self.photos / "photo.png"
+        self.make_photo(source)
+        database.add_folder(str(self.photos))
+        photo_id = database.insert_or_update_photo({
+            "path": str(source), "modified_time": 0, "clip_embedding": b"old",
+        })
+        database.insert_face(photo_id, [1, 2, 20, 30], b"old face")
+        with patch.object(self.scanner, "detect_faces", side_effect=RuntimeError("face model failed")):
+            result = self.scanner.scan_folders([str(self.photos)])
+        self.assertEqual(result["errors"], 1)
+        with closing(database.get_connection()) as conn:
+            self.assertEqual(conn.execute("SELECT embedding FROM faces").fetchone()[0], b"old face")
+            self.assertEqual(conn.execute("SELECT clip_embedding FROM photos").fetchone()[0], b"old")
 
     def test_cancel_stops_scan_and_leaves_folder_unmarked(self):
         import threading

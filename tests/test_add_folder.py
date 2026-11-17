@@ -55,7 +55,7 @@ class AddFolderTests(unittest.IsolatedAsyncioTestCase):
             namespace = runpy.run_path(str(Path(__file__).resolve().parents[1] / "main.py"))
         page_functions = [call.args[0] for call in self.ui.page.return_value.call_args_list]
         self.main_page = next(page for page in page_functions if page.__name__ == "main_page")
-        self.assertEqual(self.ui.run.call_args.kwargs["window_size"], (1300, 900))
+        self.assertEqual(self.ui.run.call_args.kwargs["window_size"], (1440, 1020))
         self.callback = namespace["add_folder"]
         self.state = self.callback.__globals__
         self.refresh_folders = self.state["refresh_folders"]
@@ -175,6 +175,49 @@ class AddFolderTests(unittest.IsolatedAsyncioTestCase):
             "Folder removed, but 1 generated thumbnail(s) could not be removed. "
             "See the application log for details.", type="warning"
         )
+
+    async def test_remove_folder_notifies_after_real_folder_row_is_deleted(self):
+        from nicegui import ui
+        from nicegui.elements.button import Button
+        from nicegui.elements.dialog import Dialog
+
+        self.state["ui"] = ui
+        self.state["refresh_folders"] = self.refresh_folders
+        self.state["refresh_photo_count"] = MagicMock()
+        self.state["search_results_container"] = None
+        client = ui.context.client
+        with client.layout:
+            self.state["folders_header"] = ui.label()
+            self.state["folders_summary"] = ui.label()
+            self.state["folders_container"] = ui.column()
+            for errors in ([], ["thumbnail locked"]):
+                with self.subTest(errors=errors):
+                    folder = str(Path(self.temp_dir.name) / ("warning" if errors else "success"))
+                    self.state["selected_folders"].append(folder)
+                    database.add_folder(folder)
+                    with self.state["folders_container"]:
+                        with ui.row():
+                            self.state["remove_folder"](folder)
+                    dialog = next(element for element in client.elements.values()
+                                  if isinstance(element, Dialog) and element.value)
+                    button = next(element for element in dialog.descendants()
+                                  if isinstance(element, Button) and element.text == "Remove folder")
+                    def remove(path):
+                        database.remove_folder_db(path)
+                        return 1, errors
+                    with patch.dict(self.state, {"remove_folder_and_index": remove}), \
+                         patch.object(client.outbox, "enqueue_message") as notify, \
+                         button.parent_slot:
+                        self.state["confirm_remove_folder"](folder, dialog, database.DB_PATH)
+                    self.assertTrue(dialog.is_deleted)
+                    self.assertEqual(notify.call_args.args[0], "notify")
+                    message = notify.call_args.args[1]
+                    if errors:
+                        self.assertEqual(message["type"], "warning")
+                        self.assertIn("1 generated thumbnail(s) could not be removed", message["message"])
+                    else:
+                        self.assertEqual(message["message"], "Removed folder and 1 indexed photo(s).")
+                    self.assertEqual(self.state["selected_folders"], [])
 
     async def test_settings_dialog_saves_each_change_and_closes(self):
         self.state["open_settings"]()
@@ -589,11 +632,12 @@ class AddFolderTests(unittest.IsolatedAsyncioTestCase):
         for folder in folders:
             database.add_folder(folder)
         database.set_folder_total(folders[0], 2)
-        database.insert_or_update_photo({"path": str(Path(folders[0]) / "first.jpg")})
-        database.insert_or_update_photo({"path": str(Path(folders[0]) / "subfolder" / "second.jpg")})
+        database.insert_or_update_photo({"path": str(Path(folders[0]) / "first.jpg"), "modified_time": 1})
+        database.insert_or_update_photo({"path": str(Path(folders[0]) / "subfolder" / "second.jpg"),
+                                         "modified_time": 1})
         database.mark_folder_indexed(folders[0])
         database.set_folder_total(folders[1], 2)
-        database.insert_or_update_photo({"path": str(Path(folders[1]) / "photo.jpg")})
+        database.insert_or_update_photo({"path": str(Path(folders[1]) / "photo.jpg"), "modified_time": 1})
         self.state["selected_folders"][:] = folders
         self.ui.expansion.reset_mock()
         self.refresh_folders()

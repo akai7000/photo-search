@@ -248,6 +248,57 @@ class FaceThumbnailTests(unittest.TestCase):
             self.assertEqual(list(result[-1]), [3, 1])
             self.assertEqual(state["ensure_face_thumbnails"].call_count, 2)
 
+    def test_enter_names_whole_group_using_button_action(self):
+        source = self.root / "photo.jpg"
+        Image.new("RGB", (50, 50), "red").save(source)
+        face_ids = [self.insert_face(source), self.insert_face(source)]
+        self.ui.checkbox.side_effect = lambda *args, **kwargs: MagicMock(value=kwargs.get("value", False))
+        self.ui.input.return_value.value = "Alice"
+
+        with patch("core.face_thumbnails.FACE_THUMBNAIL_DIR", self.root / "faces"):
+            self.open_name_people()
+            enter = next(call.args[1] for call in self.ui.input.return_value.on.call_args_list
+                         if call.args[0] == "keydown.enter")
+            button = next(call.kwargs["on_click"] for call in self.ui.button.call_args_list
+                          if call.args and call.args[0] == "Name whole group")
+            self.assertIs(enter, button)
+            enter()
+
+        with closing(database.get_connection()) as conn:
+            assigned = {row["id"] for row in conn.execute(
+                "SELECT id FROM faces WHERE person_id IS NOT NULL"
+            )}
+        self.assertEqual(assigned, set(face_ids))
+
+    def test_enter_respects_selection_and_empty_name(self):
+        source = self.root / "photo.jpg"
+        Image.new("RGB", (50, 50), "red").save(source)
+        face_ids = [self.insert_face(source), self.insert_face(source)]
+        controls = []
+
+        def checkbox(*args, **kwargs):
+            control = MagicMock(value=kwargs.get("value", False))
+            controls.append(control)
+            return control
+
+        self.ui.checkbox.side_effect = checkbox
+        self.ui.input.return_value.value = ""
+        with patch("core.face_thumbnails.FACE_THUMBNAIL_DIR", self.root / "faces"):
+            self.open_name_people()
+            enter = next(call.args[1] for call in self.ui.input.return_value.on.call_args_list
+                         if call.args[0] == "keydown.enter")
+            enter()
+            self.ui.notify.assert_called_with("Enter a name first", type="warning")
+            controls[0].value = True
+            self.ui.input.return_value.value = "Alice"
+            enter()
+
+        with closing(database.get_connection()) as conn:
+            assigned = {row["id"] for row in conn.execute(
+                "SELECT id FROM faces WHERE person_id IS NOT NULL"
+            )}
+        self.assertEqual(assigned, {face_ids[0]})
+
     def test_naming_refreshes_in_place_preserving_other_group_draft_and_selection(self):
         source = self.root / "photo.jpg"
         Image.new("RGB", (50, 50), "red").save(source)
