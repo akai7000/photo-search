@@ -27,6 +27,13 @@ class DataLocationTests(unittest.TestCase):
         self.assertEqual(data_location.load_data_directory(), self.root)
         self.assertEqual(json.loads(self.config.read_text(encoding="utf-8"))["data_directory"], str(self.root))
 
+    def test_download_url_setting_can_be_used_without_a_data_directory_and_is_preserved(self):
+        self.config.write_text(json.dumps({"download_url": "https://example.org/downloads"}), encoding="utf-8")
+        self.assertEqual(data_location.load_data_directory(), data_location.DEFAULT_DATA_DIR)
+        data_location.save_data_directory(self.root)
+        self.assertEqual(json.loads(self.config.read_text(encoding="utf-8")),
+                         {"data_directory": str(self.root), "download_url": "https://example.org/downloads"})
+
     def test_installed_storage_uses_local_app_data(self):
         with patch.object(sys, "frozen", True, create=True), \
              patch.dict(os.environ, {"LOCALAPPDATA": str(self.root)}):
@@ -46,6 +53,9 @@ class DataLocationTests(unittest.TestCase):
             self.assertEqual(data_location.load_data_directory(), self.root)
 
     def test_missing_or_invalid_config_is_reported(self):
+        self.config.write_text("{}", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            data_location.load_data_directory()
         self.config.write_text('{"data_directory": "relative"}', encoding="utf-8")
         with self.assertRaises(ValueError):
             data_location.load_data_directory()

@@ -22,12 +22,25 @@ def storage_paths():
 DEFAULT_DATA_DIR, CONFIG_PATH = storage_paths()
 
 
+def load_config() -> dict:
+    if not CONFIG_PATH.exists():
+        return {}
+    with CONFIG_PATH.open(encoding="utf-8") as file:
+        config = json.load(file)
+    if not isinstance(config, dict):
+        raise ValueError(f"Invalid configuration: {CONFIG_PATH}")
+    return config
+
+
 def load_data_directory() -> Path:
     if not CONFIG_PATH.exists():
         return DEFAULT_DATA_DIR
-    with CONFIG_PATH.open(encoding="utf-8") as file:
-        config = json.load(file)
-    if not isinstance(config, dict) or not isinstance(config.get("data_directory"), str):
+    config = load_config()
+    if "data_directory" not in config:
+        if "download_url" in config:
+            return DEFAULT_DATA_DIR
+        raise ValueError(f"Invalid data directory configuration: {CONFIG_PATH}")
+    if not isinstance(config["data_directory"], str):
         raise ValueError(f"Invalid data directory configuration: {CONFIG_PATH}")
     path = Path(config["data_directory"])
     if not path.is_absolute():
@@ -39,13 +52,15 @@ def load_data_directory() -> Path:
 
 def save_data_directory(path: Path) -> None:
     temp_path = None
+    config = load_config()
+    config["data_directory"] = str(path)
     try:
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", dir=CONFIG_PATH.parent, delete=False
         ) as file:
             temp_path = Path(file.name)
-            json.dump({"data_directory": str(path)}, file)
+            json.dump(config, file)
         os.replace(temp_path, CONFIG_PATH)
     finally:
         if temp_path is not None:

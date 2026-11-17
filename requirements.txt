@@ -1,4 +1,5 @@
 nicegui>=3.0
+certifi
 torch
 torchvision
 open-clip-torch

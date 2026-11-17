@@ -106,6 +106,14 @@ The build script downloads and verifies the pinned face models if needed, bundle
 Windows builds use the Picture Search logo as the application, shortcut, taskbar,
 and installer icon. Rebuild and reinstall to update an existing installation.
 
+On startup, Photo Search checks the official downloads page for newer R2
+installers. If one is available, a link appears in the header; connection
+failures do not display a message. The link opens
+`https://www.snowfoxninja.com/#downloads` by default. To change its destination,
+set `"download_url"` to an HTTPS URL in `.photo-search-config.json` when running
+from source, or `%LOCALAPPDATA%\Photo Search\config.json` when installed. Other
+settings in that file are preserved when changing the data directory.
+
 ## Using the application
 
 1. Select **Add Folder** and choose one or more photo folders.

@@ -558,6 +558,33 @@ class AddFolderTests(unittest.IsolatedAsyncioTestCase):
                           if call[0] == "label" and call.args and call.args[0] == "0 photos indexed")
         self.assertLess(self.ui.method_calls.index(button_call), self.ui.method_calls.index(label_call))
 
+    async def test_update_link_is_added_only_when_a_newer_version_is_available(self):
+        self.state["run"].io_bound = AsyncMock(return_value=("1.0.0", "https://example.org/downloads"))
+        self.main_page()
+        callback = next(call.args[1] for call in self.ui.timer.call_args_list
+                        if len(call.args) > 1 and call.args[1].__name__ == "show_update_if_available")
+        self.ui.link.assert_not_called()
+        await callback()
+        self.ui.link.assert_called_once_with("Version 1.0.0 is available",
+                                             target="https://example.org/downloads", new_tab=True)
+
+    async def test_update_link_is_not_shown_when_offline(self):
+        from urllib.error import URLError
+        self.state["run"].io_bound = AsyncMock(side_effect=URLError("offline"))
+        self.main_page()
+        callback = next(call.args[1] for call in self.ui.timer.call_args_list
+                        if len(call.args) > 1 and call.args[1].__name__ == "show_update_if_available")
+        await callback()
+        self.ui.link.assert_not_called()
+
+    async def test_update_link_is_not_shown_when_already_current(self):
+        self.state["run"].io_bound = AsyncMock(return_value=None)
+        self.main_page()
+        callback = next(call.args[1] for call in self.ui.timer.call_args_list
+                        if len(call.args) > 1 and call.args[1].__name__ == "show_update_if_available")
+        await callback()
+        self.ui.link.assert_not_called()
+
     async def test_theme_uses_halved_corner_radii(self):
         self.main_page()
         css = self.ui.add_css.call_args.args[0]

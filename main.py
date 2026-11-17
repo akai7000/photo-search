@@ -6,6 +6,7 @@ import sys
 import asyncio
 import logging
 from datetime import datetime, timezone
+from http.client import HTTPException
 
 if __name__ == "__main__" and getattr(sys, "frozen", False):
     from core.frozen_startup import initialize
@@ -41,6 +42,7 @@ from core.data_location import save_data_directory
 from core.database import add_folder as add_folder_db, get_folder_progress, get_folders, init_db, get_photo_count, delete_all_photos, save_setting, load_setting, get_connection, get_clusters, get_people_names, suggest_group_names, assign_name_to_cluster, assign_selected_faces, delete_face_group, delete_selected_faces, rename_person, find_photos_by_person_name, search_people_query, get_photo_ids_by_date
 from core.database import format_folder_status, get_face_photo_details, get_search_photo_details
 from core.search_dates import parse_date_search
+from core.updates import check_for_update
 init_db()
 startup.report("Database initialized.")
 startup.report("Loading image search model...")
@@ -1875,8 +1877,25 @@ def main_page():
         ui.button("Name People", on_click=lambda: open_name_people(simple=True), icon="face")
         ui.button("Settings", on_click=open_settings, icon="settings")
 
+        update_container = ui.row().classes("items-center")
+        update_container.set_visibility(False)
+
         global photo_count_label
         photo_count_label = ui.label("0 photos indexed").classes("text-subtitle1 ml-auto")
+
+    async def show_update_if_available():
+        try:
+            update = await run.io_bound(check_for_update, APP_VERSION)
+        except (OSError, ValueError, HTTPException) as exc:
+            logging.warning("Could not check for updates: %s", exc)
+            return
+        if update:
+            version, url = update
+            with update_container:
+                ui.link(f"Version {version} is available", target=url, new_tab=True).classes("text-blue-3 underline")
+            update_container.set_visibility(True)
+
+    ui.timer(0.1, show_update_if_available, once=True)
         
     # Main content
     with ui.column().classes("app-content w-full max-w-6xl mx-auto p-4 gap-4"):
