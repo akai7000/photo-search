@@ -7,7 +7,6 @@ from PIL import Image
 from pathlib import Path
 from typing import List, Tuple
 import numpy as np
-from core.startup import report as report_startup
 
 # Suppress the unauthenticated HF Hub warning
 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
@@ -15,9 +14,6 @@ warnings.filterwarnings("ignore", message=".*unauthenticated requests to the HF 
 
 # Load model once (global)
 device = "cpu"
-device_message = "Using CPU"
-print(device_message)
-report_startup(device_message)
 
 model, _, preprocess = open_clip.create_model_and_transforms(
     "ViT-B-32", pretrained="laion2b_s34b_b79k"

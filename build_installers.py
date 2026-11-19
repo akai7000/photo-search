@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the CPU installer locally."""
+"""Build the Photo Search installer locally."""
 import argparse
 import subprocess
 import sys
@@ -51,26 +51,25 @@ def find_iscc():
     raise FileNotFoundError("ISCC.exe not found. Please install Inno Setup.")
 
 
-def build_cpu():
-    """Build the CPU installer."""
+def build_installer():
+    """Build the single Photo Search installer."""
     iscc_path = find_iscc()
     print(f"\n{'='*60}")
-    print("Building CPU installer...")
+    print("Building Photo Search installer...")
     print(f"Using ISCC: {iscc_path}")
     print(f"{'='*60}\n")
     
     cmd = [
         sys.executable,
         str(ROOT / "packaging" / "build_windows.py"),
-        "CPU",
         "--iscc", iscc_path,
     ]
     
     result = subprocess.run(cmd, cwd=ROOT)
     
     if result.returncode != 0:
-        print("\n[ERROR] CPU build failed. Check the error above.")
-        print("CPU builds require CPU-only PyTorch and torchvision.")
+        print("\n[ERROR] Installer build failed. Check the error above.")
+        print("The build environment must not include CUDA-enabled PyTorch.")
     
     return result.returncode == 0
 
@@ -78,20 +77,10 @@ def build_cpu():
 def main():
     check_python_version()
     
-    parser = argparse.ArgumentParser(
-        description="Build Photo Search installers locally"
-    )
-    parser.add_argument(
-        "variant",
-        nargs="?",
-        choices=["cpu"],
-        default="cpu",
-        help="Installer to build (default: cpu)",
-    )
-    
+    parser = argparse.ArgumentParser(description="Build the Photo Search installer locally")
     parser.parse_args()
 
-    if build_cpu():
+    if build_installer():
         print(f"\n{'='*60}")
         print("[OK] Installer built successfully!")
         print(f"Location: {ROOT / 'dist' / 'installers'}")

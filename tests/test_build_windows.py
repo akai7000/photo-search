@@ -5,7 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 
 path = Path(__file__).resolve().parents[1] / "packaging" / "build_windows.py"
@@ -13,20 +13,39 @@ spec = importlib.util.spec_from_file_location("photo_search_build_windows", path
 build = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(build)
 
+setup_path = path.parents[1] / "setup_build_envs.py"
+setup_spec = importlib.util.spec_from_file_location("photo_search_setup_build_envs", setup_path)
+setup = importlib.util.module_from_spec(setup_spec)
+setup_spec.loader.exec_module(setup)
+
 
 class BundleValidationTests(unittest.TestCase):
-    def test_build_entrypoints_reject_non_cpu_variants(self):
+    def test_build_entrypoints_reject_variant_arguments(self):
         root = path.parents[1]
         for script, args in (
-            (root / "build_installers.py", ["gpu"]),
-            (root / "setup_build_envs.py", ["gpu"]),
-            (path, ["GPU", "--iscc", "unused"]),
+            (root / "build_installers.py", ["cpu"]),
+            (root / "setup_build_envs.py", ["cpu"]),
+            (path, ["CPU", "--iscc", "unused"]),
         ):
             with self.subTest(script=script):
                 result = subprocess.run([sys.executable, str(script), *args],
                                         capture_output=True, text=True, cwd=root)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("invalid choice", result.stderr)
+                self.assertIn("unrecognized arguments", result.stderr)
+
+    def test_build_environment_replaces_cuda_torch_with_pinned_cpu_wheels(self):
+        with patch.object(setup, "run_in_venv", return_value=0) as run:
+            self.assertTrue(setup.setup_build_env())
+
+        self.assertEqual(run.call_args_list[1], call(
+            "venv", "-m", "pip", "install", "--force-reinstall",
+            "torch==2.6.0+cpu", "torchvision==0.21.0+cpu",
+            "--index-url", "https://download.pytorch.org/whl/cpu",
+        ))
+        self.assertEqual(run.call_args_list[2], call(
+            "venv", "-m", "pip", "install", "-r",
+            "packaging\\requirements-windows.txt",
+        ))
 
     def test_torchvision_binaries_are_bundled(self):
         with tempfile.TemporaryDirectory() as temp:

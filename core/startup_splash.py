@@ -122,7 +122,7 @@ def main():
                 dismiss.place(x=558, y=325, anchor="se")
             elif kind == "status" and not failed:
                 text = message["text"]
-                if text == "Database initialized." or text.startswith("Using CPU"):
+                if text == "Database initialized.":
                     highlights.append(text)
                 lines = highlights + ([] if text in highlights else [text])
                 canvas.itemconfigure(status, text="\n".join(lines))

@@ -54,11 +54,11 @@ When run from source, the application stores its SQLite index, settings, and gen
 
 ## Windows installers
 
-The CPU installer supports 64-bit Windows 10 version 1809 or later; Python is not required on the target PC. OpenCLIP, YuNet and SFace run on the CPU. Microsoft Edge WebView2 Runtime is required for the native window.
+The Windows installer supports 64-bit Windows 10 version 1809 or later; Python is not required on the target PC. Photo Search processes photos locally. Microsoft Edge WebView2 Runtime is required for the native window.
 
-- [Download the CPU installer (v0.4)](https://pub-5c62851ff87d40acaeee8eb31d082ac7.r2.dev/v0.4/PhotoSearch-0.4-CPU-Setup.exe)
+- [Download Photo Search](https://www.snowfoxninja.com/#downloads)
 
-**The linked v0.4 installer predates the YuNet/SFace change and still uses InsightFace's non-commercial buffalo_l weights.** Build and publish a new installer before distributing the replacement.
+**Older v0.4 installers still use InsightFace's non-commercial buffalo_l weights.** Build and publish the replacement before distributing Photo Search commercially.
 
 New builds bundle the YuNet and SFace model weights and their license texts; they do not bundle a photo index, thumbnails, or OpenCLIP weights. OpenCLIP still downloads its model into the Hugging Face cache on first use. YuNet is MIT licensed and SFace is Apache 2.0 licensed; see `third_party_licenses` in the installed application.
 
@@ -84,21 +84,20 @@ The first face indexing run downloads the pinned YuNet and SFace models into `mo
 
 ## Building Windows installers
 
-Use 64-bit Python 3.13 and Inno Setup 7. From PowerShell in the project directory, create the CPU environment:
+Use 64-bit Python 3.13 and Inno Setup 7. From PowerShell in the project directory, create the build environment:
 
 ```powershell
-py -3.13 -m venv .venv-cpu
-.\.venv-cpu\Scripts\python.exe -m pip install torch==2.6.0+cpu torchvision==0.21.0+cpu --index-url https://download.pytorch.org/whl/cpu
-.\.venv-cpu\Scripts\python.exe -m pip install -r packaging\requirements-windows.txt
-.\.venv-cpu\Scripts\python.exe packaging\build_windows.py CPU --iscc "C:\path\to\ISCC.exe"
+py -3.13 -m venv venv
+python .\setup_build_envs.py
+.\venv\Scripts\python.exe packaging\build_windows.py --iscc "C:\path\to\ISCC.exe"
 ```
 
-The build script requires CPU-only PyTorch, downloads and verifies the pinned face models if needed, bundles only those two model files, rejects bundled databases and other model weights, includes third-party notices, and writes installers to `dist\installers`. Code signing and publication are separate steps.
+The setup script replaces any existing CUDA-enabled PyTorch with the pinned CPU-only wheels and installs the pinned application and packaging dependencies. The build downloads and verifies the pinned face models if needed, bundles only those two model files, rejects bundled databases and other model weights, includes third-party notices, and writes the installer to `dist\installers`. Code signing and publication are separate steps. Use `build.bat` to run the build or `upload.bat` to upload the installer.
 
 Windows builds use the Picture Search logo as the application, shortcut, taskbar,
 and installer icon. Rebuild and reinstall to update an existing installation.
 
-On startup, Photo Search checks the official downloads page for newer CPU R2
+On startup, Photo Search checks the official downloads page for newer R2
 installers. If one is available, a link appears in the header; connection
 failures do not display a message. The link opens
 `https://www.snowfoxninja.com/#downloads` by default. To change its destination,
@@ -147,25 +146,25 @@ not remove the license configuration.
 
 ## Face pipeline benchmark
 
-Run the standalone benchmark from the project directory with an existing CPU environment:
+Run the standalone benchmark from the project directory with the project virtual environment:
 
 ```powershell
-.\venv-cpu\Scripts\python.exe tools\benchmark_faces.py --index data\photo_search.db --limit 30 --repeat 2 --warmup 2 --output face-benchmark-cpu.json
+.\venv\Scripts\python.exe tools\benchmark_faces.py --index data\photo_search.db --limit 30 --repeat 2 --warmup 2 --output face-benchmark.json
 ```
 
 Alternatively, use `--directory C:\path\to\photos` instead of `--index`; the benchmark recursively selects supported images in sorted order. Index selection uses the first photo IDs and opens the database read-only. Missing images and face-processing errors fail the run rather than being counted as photos without faces. The benchmark does not modify the index.
 
 Results contain image, model, and face-engine SHA-256 hashes, OpenCV runtime details, startup time, face counts, and per-image and aggregate timings. Compare runs only when their dataset fingerprints, image counts, and settings match; a changed index can change the sample. Results include hashes derived from personal photos and machine details, so review them before sharing.
 
-Timings cover the current CPU YuNet + SFace `detect_faces` pipeline, including image decoding, detection and embeddings, but not CLIP, thumbnail generation, database writes, or the complete indexing workflow. Model loading is measured separately; hashing and warmup precede the timed runs, so these are warm-cache timings. Face counts are not an accuracy measure; evaluate recognition quality separately using a labeled photo set.
+Timings cover the current YuNet + SFace `detect_faces` pipeline, including image decoding, detection and embeddings, but not CLIP, thumbnail generation, database writes, or the complete indexing workflow. Model loading is measured separately; hashing and warmup precede the timed runs, so these are warm-cache timings. Face counts are not an accuracy measure; evaluate recognition quality separately using a labeled photo set.
 
 ### YuNet and SFace
 
 The separate OpenCV benchmark does not change the app. Download the [YuNet model](https://github.com/opencv/opencv_zoo/tree/48b10fa505aeb51fbd127fc60a5c660040e823b7/models/face_detection_yunet) and [SFace model](https://github.com/opencv/opencv_zoo/tree/48b10fa505aeb51fbd127fc60a5c660040e823b7/models/face_recognition_sface) from this pinned OpenCV Zoo revision. The models used for the baseline were `face_detection_yunet_2026may.onnx` (SHA-256 `ebafce4e3c118d6554634be5c27ab333b4c047a9a8c3faf1d7cf93101c22f0f0`) and `face_recognition_sface_2021dec.onnx` (SHA-256 `0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79`). Verify the downloaded files with `Get-FileHash` before running:
 
 ```powershell
-.\venv-cpu\Scripts\python.exe tools\benchmark_opencv_faces.py --index data\photo_search.db --yunet C:\path\to\face_detection_yunet_2026may.onnx --sface C:\path\to\face_recognition_sface_2021dec.onnx --limit 30 --repeat 2 --warmup 2 --output opencv-full.json
-.\venv-cpu\Scripts\python.exe tools\benchmark_opencv_faces.py --index data\photo_search.db --yunet C:\path\to\face_detection_yunet_2026may.onnx --sface C:\path\to\face_recognition_sface_2021dec.onnx --limit 30 --repeat 2 --warmup 2 --max-dimension 640 --output opencv-640.json
+.\venv\Scripts\python.exe tools\benchmark_opencv_faces.py --index data\photo_search.db --yunet C:\path\to\face_detection_yunet_2026may.onnx --sface C:\path\to\face_recognition_sface_2021dec.onnx --limit 30 --repeat 2 --warmup 2 --output opencv-full.json
+.\venv\Scripts\python.exe tools\benchmark_opencv_faces.py --index data\photo_search.db --yunet C:\path\to\face_detection_yunet_2026may.onnx --sface C:\path\to\face_recognition_sface_2021dec.onnx --limit 30 --repeat 2 --warmup 2 --max-dimension 640 --output opencv-640.json
 ```
 
 Both request OpenCV's CPU backend, disable OpenCL, and require OpenCV's `FaceDetectorYN` and `FaceRecognizerSF` APIs. The full-resolution run matches the earlier OpenCV configuration; the 640-pixel variant resizes for detection and maps landmarks back to the original image for SFace alignment. Both decode with the app's EXIF-aware Pillow pipeline. OpenCV 5's new graph engine may warn that it ignores the requested target; inspect the installed build before assuming which device is used. Resizing and different detector thresholds affect which faces are found, so speed and face-count comparisons alone do not establish accuracy.
@@ -177,7 +176,7 @@ For YuNet + SFace, pass `--score-threshold 0.7` to compare a lower detection thr
 This optional historical benchmark requires separately installing InsightFace and ONNX Runtime in a separate environment; neither is needed by the app. It uses YuNet but computes embeddings with AuraFace. Download only [`glintr100.onnx` from AuraFace-v1](https://huggingface.co/fal/AuraFace-v1/blob/94ee6ceb788a98a88807db884ae1f00d7e070d23/glintr100.onnx); the benchmarked file's SHA-256 is `a7933ea5330113b01c9b60351d8f4c33003f145d8470ac5f0e52ee2effe25c60`. Review the model's provenance and commercial-use terms separately before distributing it.
 
 ```powershell
-.\venv-cpu\Scripts\python.exe tools\benchmark_auraface.py --index data\photo_search.db --yunet C:\path\to\face_detection_yunet_2026may.onnx --auraface C:\path\to\glintr100.onnx --provider CPUExecutionProvider --limit 30 --repeat 2 --warmup 2 --output auraface-cpu.json
+.\venv\Scripts\python.exe tools\benchmark_auraface.py --index data\photo_search.db --yunet C:\path\to\face_detection_yunet_2026may.onnx --auraface C:\path\to\glintr100.onnx --provider CPUExecutionProvider --limit 30 --repeat 2 --warmup 2 --output auraface.json
 ```
 
 Add `--max-dimension 640` to benchmark resized detection. YuNet and AuraFace run on CPU; the benchmark fails if the CPU provider is unavailable or not first in its session. The output records both model hashes and the recognition session providers.

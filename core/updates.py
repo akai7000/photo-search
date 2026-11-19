@@ -15,7 +15,7 @@ DOWNLOADS_PAGE = "https://www.snowfoxninja.com/"
 DEFAULT_DOWNLOAD_URL = "https://www.snowfoxninja.com/#downloads"
 INSTALLER_HOST = "pub-5c62851ff87d40acaeee8eb31d082ac7.r2.dev"
 INSTALLER_PATH = re.compile(
-    r"/installers/PhotoSearch-([0-9]+(?:\.[0-9]+){1,3})-CPU-Setup\.exe",
+    r"/installers/PhotoSearch-([0-9]+(?:\.[0-9]+){1,3})(?:-CPU)?-Setup\.exe",
     re.IGNORECASE,
 )
 VERSION = re.compile(r"[0-9]+(?:\.[0-9]+){1,3}")
@@ -74,7 +74,7 @@ def check_for_update(current_version: str) -> tuple[str, str] | None:
     parser = _InstallerLinks()
     parser.feed(content.decode("utf-8"))
     if not parser.installers:
-        raise ValueError("No CPU R2 installer links found on the downloads page")
+        raise ValueError("No R2 installer links found on the downloads page")
     for version_key, version, url in sorted(parser.installers, key=lambda item: item[0], reverse=True):
         if version_key <= current:
             break

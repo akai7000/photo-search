@@ -73,7 +73,6 @@ def validate_bundle(bundle):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("variant", choices=("CPU",))
     parser.add_argument("--iscc", type=Path, required=True, help="Path to Inno Setup's ISCC.exe")
     parser.add_argument("--work", type=Path, default=ROOT / "build" / "windows")
     parser.add_argument("--output", type=Path, default=ROOT / "dist" / "installers")
@@ -85,15 +84,15 @@ def main():
     import torchvision
 
     if torch.version.cuda is not None:
-        parser.error("CPU builds require CPU-only PyTorch")
+        parser.error("CUDA-enabled PyTorch is not supported by this application")
     models = ensure_models(ROOT / "models", download=True)
 
-    work = args.work.resolve() / args.variant
+    work = args.work.resolve()
     dist = work / "dist"
     spec = work / "spec"
     spec.mkdir(parents=True, exist_ok=True)
     args.output.mkdir(parents=True, exist_ok=True)
-    exe_name = "PhotoSearch" + args.variant
+    exe_name = "PhotoSearch"
     subprocess.run([
         sys.executable, "-m", "PyInstaller", "--noconfirm", "--onedir", "--windowed",
         "--name", exe_name,

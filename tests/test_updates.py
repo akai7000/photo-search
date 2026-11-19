@@ -18,9 +18,9 @@ class UpdateTests(unittest.TestCase):
 
     def test_selects_newest_published_version_numerically(self):
         html = (
-            f'<a href="{BASE}/PhotoSearch-0.9.9-CPU-Setup.exe">old</a>'
-            f'<a href="{BASE}/PhotoSearch-0.10.0-CPU-Setup.exe">new</a>'
-            '<a href="https://example.com/installers/PhotoSearch-9.0.0-CPU-Setup.exe">other</a>'
+            f'<a href="{BASE}/PhotoSearch-0.9.9-Setup.exe">old</a>'
+            f'<a href="{BASE}/PhotoSearch-0.10.0-Setup.exe">new</a>'
+            '<a href="https://example.com/installers/PhotoSearch-9.0.0-Setup.exe">other</a>'
         ).encode()
         with patch("core.updates.urlopen", side_effect=[self.response(html), self.response()]) as request, \
              patch("core.updates.load_download_url", return_value="https://example.org/downloads"):
@@ -28,38 +28,38 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(result, ("0.10.0", "https://example.org/downloads"))
         self.assertEqual(request.call_args_list[1].args[0].method, "HEAD")
         self.assertEqual(request.call_args_list[1].args[0].full_url,
-                         f"{BASE}/PhotoSearch-0.10.0-CPU-Setup.exe")
+                         f"{BASE}/PhotoSearch-0.10.0-Setup.exe")
         for call in request.call_args_list:
             self.assertEqual(call.args[0].get_header("User-agent"), "PhotoSearch/0.9.0")
             self.assertEqual(call.kwargs["context"].verify_mode, ssl.CERT_REQUIRED)
             self.assertTrue(call.kwargs["context"].check_hostname)
 
     def test_current_or_older_version_does_not_show_update(self):
-        html = f'<a href="{BASE}/PhotoSearch-0.5.1-CPU-Setup.exe">download</a>'.encode()
+        html = f'<a href="{BASE}/PhotoSearch-0.5.1-Setup.exe">download</a>'.encode()
         with patch("core.updates.urlopen", return_value=self.response(html)) as request:
             self.assertIsNone(updates.check_for_update("0.5.1.0"))
         self.assertEqual(request.call_count, 1)
 
-    def test_ignores_newer_non_cpu_installer(self):
-        cpu = f"{BASE}/PhotoSearch-1.0.0-CPU-Setup.exe"
+    def test_ignores_variant_installer_links(self):
+        installer = f"{BASE}/PhotoSearch-1.0.0-Setup.exe"
         other = f"{BASE}/PhotoSearch-2.0.0-GPU-Setup.exe"
-        html = f'<a href="{cpu}">cpu</a><a href="{other}">other</a>'.encode()
+        html = f'<a href="{installer}">installer</a><a href="{other}">other</a>'.encode()
         with patch("core.updates.urlopen", side_effect=[self.response(html), self.response()]) as request, \
              patch("core.updates.load_download_url", return_value="https://example.org/downloads"):
             self.assertEqual(updates.check_for_update("0.5.1"), ("1.0.0", "https://example.org/downloads"))
-            self.assertEqual(request.call_args_list[1].args[0].full_url, cpu)
+            self.assertEqual(request.call_args_list[1].args[0].full_url, installer)
 
-    def test_newer_non_cpu_installer_does_not_trigger_update(self):
-        cpu = f"{BASE}/PhotoSearch-1.0.0-CPU-Setup.exe"
+    def test_variant_installer_link_does_not_trigger_update(self):
+        current = f"{BASE}/PhotoSearch-1.0.0-Setup.exe"
         other = f"{BASE}/PhotoSearch-2.0.0-GPU-Setup.exe"
-        html = f'<a href="{cpu}">cpu</a><a href="{other}">other</a>'.encode()
+        html = f'<a href="{current}">current</a><a href="{other}">other</a>'.encode()
         with patch("core.updates.urlopen", return_value=self.response(html)) as request:
             self.assertIsNone(updates.check_for_update("1.0.0"))
         self.assertEqual(request.call_count, 1)
 
-    def test_missing_newest_cpu_installer_falls_back_to_older_release(self):
-        latest = f"{BASE}/PhotoSearch-2.0.0-CPU-Setup.exe"
-        previous = f"{BASE}/PhotoSearch-1.0.0-CPU-Setup.exe"
+    def test_missing_newest_installer_falls_back_to_older_release(self):
+        latest = f"{BASE}/PhotoSearch-2.0.0-Setup.exe"
+        previous = f"{BASE}/PhotoSearch-1.0.0-Setup.exe"
         html = f'<a href="{latest}">latest</a><a href="{previous}">previous</a>'.encode()
         missing = HTTPError(latest, 404, "missing", None, None)
         with patch("core.updates.urlopen", side_effect=[self.response(html), missing, self.response()]) as request, \
@@ -68,11 +68,19 @@ class UpdateTests(unittest.TestCase):
             self.assertEqual(request.call_args_list[2].args[0].full_url, previous)
 
     def test_missing_installers_do_not_show_update(self):
-        cpu = f"{BASE}/PhotoSearch-1.0.0-CPU-Setup.exe"
-        html = f'<a href="{cpu}">cpu</a>'.encode()
-        missing = HTTPError(cpu, 404, "missing", None, None)
+        installer = f"{BASE}/PhotoSearch-1.0.0-Setup.exe"
+        html = f'<a href="{installer}">installer</a>'.encode()
+        missing = HTTPError(installer, 404, "missing", None, None)
         with patch("core.updates.urlopen", side_effect=[self.response(html), missing]):
             self.assertIsNone(updates.check_for_update("0.5.1"))
+
+    def test_recognizes_previously_published_installer_names(self):
+        legacy = f"{BASE}/PhotoSearch-1.0.0-CPU-Setup.exe"
+        html = f'<a href="{legacy}">legacy release</a>'.encode()
+        with patch("core.updates.urlopen", side_effect=[self.response(html), self.response()]) as request, \
+             patch("core.updates.load_download_url", return_value="https://example.org/downloads"):
+            self.assertEqual(updates.check_for_update("0.5.1"), ("1.0.0", "https://example.org/downloads"))
+        self.assertEqual(request.call_args_list[1].args[0].full_url, legacy)
 
     def test_local_download_url_defaults_and_rejects_unsafe_urls(self):
         with patch("core.updates.load_config", return_value={}):

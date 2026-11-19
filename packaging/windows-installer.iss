@@ -1,4 +1,4 @@
-#define Variant "CPU"
+#define AppId "PhotoSearch-CPU"
 #ifndef AppVersion
   #error AppVersion is required
 #endif
@@ -9,21 +9,21 @@
   #error OutputDir is required
 #endif
 
-#define AppName "Photo Search (" + Variant + ")"
-#define AppExe "PhotoSearch" + Variant + ".exe"
+#define AppName "Photo Search"
+#define AppExe "PhotoSearch.exe"
 
 [Setup]
-AppId=PhotoSearch-{#Variant}
+AppId={#AppId}
 AppName={#AppName}
 AppVersion={#AppVersion}
-DefaultDirName={localappdata}\Programs\Photo Search {#Variant}
+DefaultDirName={localappdata}\Programs\Snowfox Ninja\Photo Search
 DefaultGroupName={#AppName}
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
 OutputDir={#OutputDir}
-OutputBaseFilename=PhotoSearch-{#AppVersion}-{#Variant}-Setup
+OutputBaseFilename=PhotoSearch-{#AppVersion}-Setup
 Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern

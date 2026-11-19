@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Set up the CPU build environment."""
+"""Set up the Photo Search build environment."""
 import subprocess
 import sys
 from pathlib import Path
@@ -21,50 +21,43 @@ def run_in_venv(venv_name, *args):
     return subprocess.run(cmd, cwd=ROOT).returncode
 
 
-def setup_cpu_env():
-    """Set up CPU-only environment."""
+def setup_build_env():
+    """Set up the single installer build environment."""
     print("\n" + "="*60)
-    print("Setting up CPU-only environment (venv-cpu)...")
+    print("Setting up the build environment (venv)...")
     print("="*60)
     
     # Install base requirements
-    if run_in_venv("venv-cpu", "-m", "pip", "install", "--upgrade", "pip") != 0:
+    if run_in_venv("venv", "-m", "pip", "install", "--upgrade", "pip") != 0:
         return False
     
-    # Install CPU-only PyTorch
-    if run_in_venv("venv-cpu", "-m", "pip", "install", 
-                   "torch", "torchvision", "torchaudio",
+    # Replace any existing CUDA build with the pinned CPU-only wheels.
+    if run_in_venv("venv", "-m", "pip", "install",
+                   "--force-reinstall",
+                   "torch==2.6.0+cpu", "torchvision==0.21.0+cpu",
                    "--index-url", "https://download.pytorch.org/whl/cpu") != 0:
         return False
     
-    # Install other dependencies from requirements.txt
-    if run_in_venv("venv-cpu", "-m", "pip", "install", "-r", "requirements.txt") != 0:
+    # Install the pinned application and packaging dependencies.
+    if run_in_venv("venv", "-m", "pip", "install",
+                   "-r", "packaging\\requirements-windows.txt") != 0:
         return False
     
     print("\n" + "="*60)
-    print("[OK] CPU environment ready!")
+    print("[OK] Build environment ready!")
     print("="*60)
     return True
 
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Set up the CPU build environment")
-    parser.add_argument(
-        "target",
-        nargs="?",
-        choices=["cpu"],
-        default="cpu",
-        help="Environment to set up (default: cpu)"
-    )
-    
+    parser = argparse.ArgumentParser(description="Set up the Photo Search build environment")
     parser.parse_args()
 
-    if setup_cpu_env():
+    if setup_build_env():
         print("\n" + "="*60)
         print("[OK] Environment set up successfully!")
-        print("\nTo build installers:")
-        print("  CPU:  venv-cpu\\Scripts\\activate && python build_installers.py cpu")
+        print("\nRun build.bat to create the installer.")
         print("="*60)
         return 0
     else:
