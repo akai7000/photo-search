@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Set up CPU and GPU build environments."""
+"""Set up the CPU build environment."""
 import subprocess
 import sys
 from pathlib import Path
@@ -47,67 +47,28 @@ def setup_cpu_env():
     return True
 
 
-def setup_gpu_env():
-    """Set up GPU environment."""
-    print("\n" + "="*60)
-    print("Setting up GPU environment (venv-gpu)...")
-    print("="*60)
-    print("[INFO] This will download ~3GB of GPU libraries")
-    print("[INFO] Make sure you have at least 15GB free disk space")
-    print("="*60)
-    
-    # Install base requirements
-    if run_in_venv("venv-gpu", "-m", "pip", "install", "--upgrade", "pip") != 0:
-        return False
-    
-    # Install GPU PyTorch with CUDA 12.4
-    if run_in_venv("venv-gpu", "-m", "pip", "install",
-                   "torch", "torchvision", "torchaudio",
-                   "--index-url", "https://download.pytorch.org/whl/cu124") != 0:
-        return False
-    
-    # Install other dependencies from requirements.txt
-    if run_in_venv("venv-gpu", "-m", "pip", "install", "-r", "requirements.txt") != 0:
-        return False
-    
-    print("\n" + "="*60)
-    print("[OK] GPU environment ready!")
-    print("="*60)
-    return True
-
-
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Set up CPU and GPU build environments")
+    parser = argparse.ArgumentParser(description="Set up the CPU build environment")
     parser.add_argument(
         "target",
         nargs="?",
-        choices=["cpu", "gpu", "both"],
-        default="both",
-        help="Which environment(s) to set up (default: both)"
+        choices=["cpu"],
+        default="cpu",
+        help="Environment to set up (default: cpu)"
     )
     
-    args = parser.parse_args()
-    
-    success = True
-    if args.target in ("cpu", "both"):
-        if not setup_cpu_env():
-            success = False
-    
-    if args.target in ("gpu", "both"):
-        if not setup_gpu_env():
-            success = False
-    
-    if success:
+    parser.parse_args()
+
+    if setup_cpu_env():
         print("\n" + "="*60)
-        print("[OK] All environments set up successfully!")
+        print("[OK] Environment set up successfully!")
         print("\nTo build installers:")
         print("  CPU:  venv-cpu\\Scripts\\activate && python build_installers.py cpu")
-        print("  GPU:  venv-gpu\\Scripts\\activate && python build_installers.py gpu")
         print("="*60)
         return 0
     else:
-        print("\n[ERROR] Some environments failed to set up")
+        print("\n[ERROR] Environment setup failed")
         return 1
 
 

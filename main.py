@@ -39,6 +39,13 @@ from pathlib import Path
 startup.report("Initializing database...")
 from core import database, face_thumbnails
 from core.data_location import save_data_directory
+from core.license_client import (
+    LicenseError,
+    get_saved_license_key,
+    get_license_state,
+    validate_license,
+    validate_saved_license,
+)
 from core.database import add_folder as add_folder_db, get_folder_progress, get_folders, init_db, get_photo_count, delete_all_photos, save_setting, load_setting, get_connection, get_clusters, get_people_names, suggest_group_names, assign_name_to_cluster, assign_selected_faces, delete_face_group, delete_selected_faces, rename_person, find_photos_by_person_name, search_people_query, get_photo_ids_by_date
 from core.database import format_folder_status, get_face_photo_details, get_search_photo_details
 from core.search_dates import parse_date_search
@@ -273,6 +280,12 @@ async def index_folders():
         ui.notify(f"Could not load indexing settings: {exc}", type="negative")
         return
 
+    try:
+        if get_saved_license_key() and not get_license_state().active:
+            await run.io_bound(validate_saved_license)
+    except (LicenseError, OSError, ValueError) as exc:
+        ui.notify(f"License check failed; the free photo limit applies: {exc}", type="warning")
+
     ui.notify("Indexing started...")
     start_time = time.time()
     folders_to_scan = list(selected_folders)
@@ -319,16 +332,25 @@ async def index_folders():
         f"Added: {result['added']}, Updated: {result['updated']}, "
         f"Skipped: {result['skipped']}, Errors: {result['errors']}"
         f", Folders skipped: {result['folders_skipped']}"
+        f", Limit skipped: {result['limit_skipped']}"
         + (f", People found: {n_clusters}" if n_clusters is not None else "")
     )
 
     # UI updates happen safely on the main thread after the work finishes
-    prefix = "Indexing cancelled. Photos indexed so far were kept." if result["cancelled"] else "Done!"
+    if result["cancelled"]:
+        prefix = "Indexing cancelled. Photos indexed so far were kept."
+    elif result["limit_skipped"]:
+        prefix = "Indexing finished with unindexed photos."
+    else:
+        prefix = "Done!"
+    if result["limit_skipped"]:
+        prefix += f" Photo limit reached ({result['photo_limit']:,}); {result['limit_skipped']:,} new photos were not indexed."
     ui.notify(
         f"{prefix} Added: {result['added']}, Updated: {result['updated']}, "
         f"Skipped: {result['skipped']}, Errors: {result['errors']}, "
         f"Folders skipped: {result['folders_skipped']}"
-        + (f", People found: {n_clusters}" if n_clusters is not None else "")
+        + (f", People found: {n_clusters}" if n_clusters is not None else ""),
+        **({"type": "warning"} if result["limit_skipped"] else {}),
     )
     refresh_photo_count()
     refresh_folders()
@@ -1620,7 +1642,8 @@ def open_settings():
         if type(skip_indexed_value) is not bool:
             raise ValueError("Invalid Skip Previously Indexed Folders setting")
         face_page_size, initial_open_groups = load_face_settings()
-    except (sqlite3.Error, ValueError) as exc:
+        license_state = get_license_state()
+    except (OSError, sqlite3.Error, ValueError) as exc:
         ui.notify(f"Could not load settings: {exc}", type="negative")
         return
 
@@ -1634,6 +1657,41 @@ def open_settings():
             ui.label("Most changes are saved automatically. Use Update to change the data directory.").classes(
                 "text-caption text-gray-400"
             )
+            with ui.column().classes("w-full shrink-0 gap-0 rounded overflow-hidden bg-grey-9"):
+                ui.label("License").classes(
+                    "w-full bg-grey-8 text-grey-2 text-body2 text-bold px-3 py-2"
+                )
+                with ui.column().classes("w-full gap-3 p-4"):
+                    ui.label(
+                        "A successful online activation permanently unlocks this device, including while offline."
+                    ).classes("text-caption text-gray-400")
+                    license_status = ui.label(license_state.message)
+                    if license_state.active:
+                        license_status.classes("text-positive")
+                    if not license_state.active:
+                        license_input = ui.input(label="License key").classes("w-full")
+
+                        async def activate():
+                            activate_button.disable()
+                            try:
+                                state = await run.io_bound(validate_license, license_input.value)
+                            except (LicenseError, OSError, ValueError) as exc:
+                                license_status.set_text(str(exc))
+                                ui.notify(f"Could not activate license: {exc}", type="negative")
+                            else:
+                                license_status.set_text(state.message)
+                                license_status.classes("text-positive")
+                                ui.notify(state.message, type="positive")
+                                license_input.set_value("")
+                                license_input.set_visibility(False)
+                                activate_button.set_visibility(False)
+                            finally:
+                                activate_button.enable()
+
+                        license_input.on("keydown.enter", activate)
+                        activate_button = ui.button(
+                            "Activate", on_click=activate, color="primary"
+                        ).props("no-caps")
             with ui.column().classes("w-full shrink-0 gap-0 rounded overflow-hidden bg-grey-9"):
                 ui.label("Data Storage").classes(
                     "w-full bg-grey-8 text-grey-2 text-body2 text-bold px-3 py-2"

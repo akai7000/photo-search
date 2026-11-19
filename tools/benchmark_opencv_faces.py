@@ -62,7 +62,6 @@ def benchmark(paths, detector_model, recognizer_model, repeat, warmup, max_dimen
             "opencv": cv2.__version__,
             "requested_backend": "DNN_BACKEND_OPENCV",
             "requested_target": "DNN_TARGET_CPU",
-            "cuda_devices": cv2.cuda.getCudaEnabledDeviceCount(),
             "opencl_enabled": cv2.ocl.useOpenCL(),
             "opencv_threads": cv2.getNumThreads(),
         },

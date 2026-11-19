@@ -6,6 +6,7 @@ from PIL import Image, ImageOps, ExifTags
 from datetime import datetime
 from core.database import (
     DB_PATH,
+    PhotoIndexLimitReached,
     delete_faces_for_photo,
     get_connection,
     get_folder_progress,
@@ -16,9 +17,11 @@ from core.database import (
 )
 from core.clip_engine import get_image_embedding
 from core.face_engine import detect_faces
+from core.license_client import is_licensed
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif", ".heic", ".raw"}
 THUMBNAIL_DIR = DB_PATH.parent / "thumbnails"
+PHOTO_INDEX_LIMIT = 1000
 
 def compute_file_hash(path: Path) -> str:
     """Compute a fast hash of the file (first 1 MB + size + mtime is often enough, but full hash is safer)."""
@@ -40,11 +43,15 @@ def scan_folders(
     Scan the given folders for image files and insert/update them in the database.
     Returns a summary dict.
     """
+    if type(PHOTO_INDEX_LIMIT) is not int or PHOTO_INDEX_LIMIT < 0:
+        raise ValueError("Photo index limit must be a non-negative integer")
+    photo_limit = None if is_licensed() else PHOTO_INDEX_LIMIT
     print(f"Starting scan of {len(folders)} folder(s)...")
     added = 0
     updated = 0
     skipped = 0
     errors = 0
+    limit_skipped: set[str] = set()
 
     all_paths: Set[str] = set()
 
@@ -111,13 +118,18 @@ def scan_folders(
 
             # Quick check: skip if already indexed and unchanged
             conn = get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT file_hash, modified_time, thumbnail_path FROM photos WHERE path = ?",
-                (str(path),)
-            )
-            row = cursor.fetchone()
-            conn.close()
+            try:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT file_hash, modified_time, thumbnail_path FROM photos WHERE path = ?",
+                    (str(path),)
+                )
+                row = cursor.fetchone()
+                if (row is None and photo_limit is not None
+                        and cursor.execute("SELECT COUNT(*) FROM photos").fetchone()[0] >= photo_limit):
+                    raise PhotoIndexLimitReached()
+            finally:
+                conn.close()
 
             unchanged = (
                 row is not None
@@ -167,7 +179,8 @@ def scan_folders(
             }
 
             # Insert or update photo and get its ID
-            photo_id = insert_or_update_photo(data)
+            photo_id = insert_or_update_photo(data, max_photos=photo_limit)
+            limit_skipped.discard(str(path))
             changed_folders.add(current_root)
 
             # Face detection
@@ -186,6 +199,9 @@ def scan_folders(
             else:
                 updated += 1
 
+        except PhotoIndexLimitReached:
+            limit_skipped.add(str(path))
+            failed_folders.add(current_root)
         except Exception as e:
             errors += 1
             failed_folders.add(current_root)
@@ -208,6 +224,8 @@ def scan_folders(
         "total_found": len(all_paths),
         "cancelled": cancelled,
         "folders_skipped": sum(os.path.normcase(os.path.abspath(folder)) in skipped_roots for folder in folders),
+        "limit_skipped": len(limit_skipped),
+        "photo_limit": photo_limit,
     }
 
 def extract_date_taken(path: Path) -> str | None:

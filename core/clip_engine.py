@@ -14,12 +14,8 @@ logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore", message=".*unauthenticated requests to the HF Hub.*")
 
 # Load model once (global)
-device = "cuda" if torch.cuda.is_available() else "cpu"
-
-if device == "cuda":
-    device_message = f"Using GPU: {torch.cuda.get_device_name(0)} (CUDA {torch.version.cuda})"
-else:
-    device_message = "Using CPU (CUDA not available)"
+device = "cpu"
+device_message = "Using CPU"
 print(device_message)
 report_startup(device_message)
 

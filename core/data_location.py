@@ -37,7 +37,15 @@ def load_data_directory() -> Path:
         return DEFAULT_DATA_DIR
     config = load_config()
     if "data_directory" not in config:
-        if "download_url" in config:
+        if any(key in config for key in (
+            "download_url",
+            "mock_license_key",
+            "license_key",
+            "license_machine_id",
+            "license_last_validated",
+            "license_expires_at",
+            "license_permanent",
+        )):
             return DEFAULT_DATA_DIR
         raise ValueError(f"Invalid data directory configuration: {CONFIG_PATH}")
     if not isinstance(config["data_directory"], str):
@@ -51,9 +59,21 @@ def load_data_directory() -> Path:
 
 
 def save_data_directory(path: Path) -> None:
-    temp_path = None
+    save_config_value("data_directory", str(path))
+
+
+def save_config_value(key: str, value: object) -> None:
+    save_config_values({key: value})
+
+
+def save_config_values(values: dict) -> None:
     config = load_config()
-    config["data_directory"] = str(path)
+    config.update(values)
+    _write_config(config)
+
+
+def _write_config(config: dict) -> None:
+    temp_path = None
     try:
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(

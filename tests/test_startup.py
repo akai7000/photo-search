@@ -40,12 +40,12 @@ class StartupTests(unittest.TestCase):
 
     def test_progress_and_close_send_ordered_messages(self):
         startup.report("Database initialized.")
-        startup.report("Using GPU: Test GPU (CUDA 12.4)")
+        startup.report("Using CPU")
         startup.close_splash()
         messages = [json.loads(call.args[0]) for call in self.process.stdin.write.call_args_list]
         self.assertEqual(messages, [
             {"kind": "status", "text": "Database initialized."},
-            {"kind": "status", "text": "Using GPU: Test GPU (CUDA 12.4)"},
+            {"kind": "status", "text": "Using CPU"},
             {"kind": "close", "text": ""},
         ])
         self.process.stdin.close.assert_called_once()

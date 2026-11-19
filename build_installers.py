@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build installers locally (CPU and GPU)."""
+"""Build the CPU installer locally."""
 import argparse
 import subprocess
 import sys
@@ -51,38 +51,26 @@ def find_iscc():
     raise FileNotFoundError("ISCC.exe not found. Please install Inno Setup.")
 
 
-def build_variant(variant):
-    """Build a single variant (CPU or GPU)."""
+def build_cpu():
+    """Build the CPU installer."""
     iscc_path = find_iscc()
     print(f"\n{'='*60}")
-    print(f"Building {variant} installer...")
+    print("Building CPU installer...")
     print(f"Using ISCC: {iscc_path}")
     print(f"{'='*60}\n")
     
     cmd = [
         sys.executable,
         str(ROOT / "packaging" / "build_windows.py"),
-        variant,
+        "CPU",
         "--iscc", iscc_path,
     ]
     
     result = subprocess.run(cmd, cwd=ROOT)
     
     if result.returncode != 0:
-        if variant == "CPU":
-            print(f"\n[ERROR] CPU build failed. This usually means:")
-            print("  - GPU PyTorch is installed")
-            print("  - CPU builds require CPU-only versions")
-            print("\n[INFO] To fix, install CPU-only packages:")
-            print("  pip uninstall torch -y")
-            print("  pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu")
-        elif variant == "GPU":
-            print(f"\n[ERROR] GPU build failed. This usually means:")
-            print("  - CPU PyTorch is installed")
-            print("  - GPU builds require CUDA 12.4 versions")
-            print("\n[INFO] To fix, install GPU packages:")
-            print("  pip uninstall torch -y")
-            print("  pip install torch==2.0.0 torchvision==0.15.0 torchaudio==2.0.0 --index-url https://download.pytorch.org/whl/cu124")
+        print("\n[ERROR] CPU build failed. Check the error above.")
+        print("CPU builds require CPU-only PyTorch and torchvision.")
     
     return result.returncode == 0
 
@@ -94,36 +82,23 @@ def main():
         description="Build Photo Search installers locally"
     )
     parser.add_argument(
-        "variants",
-        nargs="*",
-        choices=["cpu", "gpu", "both"],
-        default=["cpu"],
-        help="Which installer(s) to build: cpu, gpu, or both (default: cpu)",
+        "variant",
+        nargs="?",
+        choices=["cpu"],
+        default="cpu",
+        help="Installer to build (default: cpu)",
     )
     
-    args = parser.parse_args()
-    
-    variants_to_build = []
-    if not args.variants or args.variants == ["cpu"]:
-        variants_to_build = ["CPU"]
-    elif args.variants == ["gpu"]:
-        variants_to_build = ["GPU"]
-    elif args.variants == ["both"]:
-        variants_to_build = ["CPU", "GPU"]
-    
-    success = True
-    for variant in variants_to_build:
-        if not build_variant(variant):
-            success = False
-    
-    if success:
+    parser.parse_args()
+
+    if build_cpu():
         print(f"\n{'='*60}")
-        print("[OK] All installers built successfully!")
+        print("[OK] Installer built successfully!")
         print(f"Location: {ROOT / 'dist' / 'installers'}")
         print(f"{'='*60}")
         return 0
     else:
-        print(f"\n[ERROR] Some builds failed")
+        print("\n[ERROR] Installer build failed")
         return 1
 
 

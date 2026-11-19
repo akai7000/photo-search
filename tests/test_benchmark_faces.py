@@ -142,14 +142,20 @@ class FaceBenchmarkTests(unittest.TestCase):
             recognizer.get.assert_not_called()
 
     @unittest.skipUnless(HAS_AURAFACE_DEPS, "AuraFace benchmark dependencies are optional")
-    def test_auraface_rejects_unavailable_cuda_provider(self):
+    def test_auraface_rejects_unavailable_cpu_provider(self):
         with patch("tools.benchmark_auraface.fingerprint_images", return_value=(["hash"], "dataset")), \
              patch("tools.benchmark_auraface.sha256_file", return_value="hash"), \
              patch("tools.benchmark_auraface.onnxruntime.get_available_providers",
-                   return_value=["CPUExecutionProvider"]):
+                   return_value=[]):
             with self.assertRaisesRegex(RuntimeError, "provider is unavailable"):
                 benchmark_auraface([Path("photo.jpg")], Path("detector.onnx"), Path("model.onnx"),
-                                   1, 0, 0, "CUDAExecutionProvider")
+                                   1, 0, 0, "CPUExecutionProvider")
+
+    @unittest.skipUnless(HAS_AURAFACE_DEPS, "AuraFace benchmark dependencies are optional")
+    def test_auraface_rejects_other_providers(self):
+        with self.assertRaisesRegex(ValueError, "Only the CPU"):
+            benchmark_auraface([], Path("detector.onnx"), Path("model.onnx"),
+                               1, 0, 0, "CUDAExecutionProvider")
 
 
 if __name__ == "__main__":

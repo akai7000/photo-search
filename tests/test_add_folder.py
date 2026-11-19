@@ -8,12 +8,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from core import database
 from core import data_location, face_thumbnails
+from core.license_client import LicenseState
 
 
 class AddFolderTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
+        config_patch = patch.object(data_location, "CONFIG_PATH", Path(self.temp_dir.name) / "config.json")
+        config_patch.start()
+        self.addCleanup(config_patch.stop)
         db_patch = patch.object(database, "DB_PATH", Path(self.temp_dir.name) / "test.db")
         db_patch.start()
         self.addCleanup(db_patch.stop)
@@ -277,7 +281,8 @@ class AddFolderTests(unittest.IsolatedAsyncioTestCase):
         self.state["selected_folders"][:] = ["photos"]
         scan = self.state["scan_folders"]
         scan.return_value = {"added": 0, "updated": 0, "skipped": 0, "errors": 0,
-                             "cancelled": False, "folders_skipped": 1}
+                             "cancelled": False, "folders_skipped": 1,
+                             "limit_skipped": 0, "photo_limit": 1000}
         async def io_bound(func, *args):
             return func(*args)
         self.state["run"].io_bound = io_bound
@@ -292,6 +297,80 @@ class AddFolderTests(unittest.IsolatedAsyncioTestCase):
         await self.state["index_folders"]()
         self.assertFalse(scan.call_args.kwargs["skip_indexed_folders"])
         self.state["cluster_faces"].assert_called_once()
+
+    async def test_indexing_reports_photo_limit_as_warning(self):
+        self.state["selected_folders"][:] = ["photos"]
+        self.state["scan_folders"].return_value = {
+            "added": 1, "updated": 0, "skipped": 0, "errors": 0,
+            "cancelled": False, "folders_skipped": 0,
+            "limit_skipped": 2, "photo_limit": 1000,
+        }
+        async def io_bound(func, *args):
+            return func(*args)
+        self.state["run"].io_bound = io_bound
+        self.state["refresh_photo_count"] = MagicMock()
+        await self.state["index_folders"]()
+        message = self.ui.notify.call_args.args[0]
+        self.assertIn("Photo limit reached (1,000)", message)
+        self.assertIn("2 new photos were not indexed", message)
+        self.assertEqual(self.ui.notify.call_args.kwargs["type"], "warning")
+
+    async def test_license_settings_validate_and_persist(self):
+        license_input = MagicMock()
+        license_input.classes.return_value = license_input
+        data_input = MagicMock()
+        data_input.classes.return_value = data_input
+        self.ui.input.side_effect = lambda label, **kwargs: (
+            license_input if label.startswith("License key") else data_input
+        )
+        activate_button_widget = MagicMock()
+        activate_button_widget.props.return_value = activate_button_widget
+        self.ui.button.side_effect = lambda *args, **kwargs: (
+            activate_button_widget
+            if args and args[0] == "Activate"
+            else self.ui.button.return_value
+        )
+        self.state["run"].io_bound = AsyncMock(side_effect=lambda func, *args: func(*args))
+        validate = MagicMock(return_value=LicenseState(
+            True, "License permanently activated on this device"
+        ))
+        self.state["validate_license"] = validate
+        self.state["open_settings"]()
+        self.ui.label.assert_any_call("Free version - photo indexing limit applies")
+        activate = next(call.kwargs["on_click"] for call in self.ui.button.call_args_list
+                        if call.args and call.args[0] == "Activate")
+        license_input.value = "AAAA-BBBB-CCCC-DDDD"
+        await activate()
+        validate.assert_called_once_with(license_input.value)
+        self.ui.notify.assert_called_with(
+            "License permanently activated on this device", type="positive"
+        )
+        self.ui.label.return_value.classes.assert_any_call("text-positive")
+        license_input.set_value.assert_called_once_with("")
+        license_input.set_visibility.assert_called_once_with(False)
+        activate_button_widget.set_visibility.assert_called_once_with(False)
+
+    async def test_permanent_license_settings_hide_activation_controls(self):
+        data_location.save_config_values({
+            "license_key": "AAAA-BBBB-CCCC-DDDD",
+            "license_machine_id": "d4c393eb-67cd-426f-97fb-4c2641052be8",
+            "license_last_validated": "2020-01-01T00:00:00+00:00",
+            "license_expires_at": "2021-01-01T00:00:00+00:00",
+            "license_permanent": True,
+        })
+        self.state["open_settings"]()
+        self.ui.label.assert_any_call("License permanently activated on this device")
+        self.ui.label.return_value.classes.assert_any_call("text-positive")
+        self.assertFalse(any(
+            call.args and call.args[0] == "Activate"
+            for call in self.ui.button.call_args_list
+        ))
+        self.ui.reset_mock()
+        self.state["open_settings"]()
+        self.assertFalse(any(
+            call.args and call.args[0] in {"License (mock)", "Testing only: this is not a real paid license."}
+            for call in self.ui.label.call_args_list
+        ))
 
     async def test_settings_dialog_is_available_while_indexing(self):
         self.main_page()
@@ -517,7 +596,7 @@ class AddFolderTests(unittest.IsolatedAsyncioTestCase):
         self.state["open_settings"]()
         classes = [call.args[0] for call in self.ui.column.return_value.classes.call_args_list if call.args]
         self.assertIn("w-full min-h-0 gap-4 overflow-y-auto", classes)
-        self.assertEqual(classes.count("w-full shrink-0 gap-0 rounded overflow-hidden bg-grey-9"), 3)
+        self.assertEqual(classes.count("w-full shrink-0 gap-0 rounded overflow-hidden bg-grey-9"), 4)
 
     async def test_face_settings_reject_invalid_values_and_revert_on_save_failure(self):
         controls = [MagicMock(), MagicMock()]

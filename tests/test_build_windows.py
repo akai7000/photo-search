@@ -1,5 +1,7 @@
 import hashlib
 import importlib.util
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +15,19 @@ spec.loader.exec_module(build)
 
 
 class BundleValidationTests(unittest.TestCase):
+    def test_build_entrypoints_reject_non_cpu_variants(self):
+        root = path.parents[1]
+        for script, args in (
+            (root / "build_installers.py", ["gpu"]),
+            (root / "setup_build_envs.py", ["gpu"]),
+            (path, ["GPU", "--iscc", "unused"]),
+        ):
+            with self.subTest(script=script):
+                result = subprocess.run([sys.executable, str(script), *args],
+                                        capture_output=True, text=True, cwd=root)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("invalid choice", result.stderr)
+
     def test_torchvision_binaries_are_bundled(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -73,7 +73,7 @@ def validate_bundle(bundle):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("variant", choices=("CPU", "GPU"))
+    parser.add_argument("variant", choices=("CPU",))
     parser.add_argument("--iscc", type=Path, required=True, help="Path to Inno Setup's ISCC.exe")
     parser.add_argument("--work", type=Path, default=ROOT / "build" / "windows")
     parser.add_argument("--output", type=Path, default=ROOT / "dist" / "installers")
@@ -84,11 +84,8 @@ def main():
     import torch
     import torchvision
 
-    if args.variant == "CPU":
-        if torch.version.cuda is not None:
-            parser.error("CPU builds require CPU-only PyTorch")
-    elif torch.version.cuda != "12.4":
-        parser.error("GPU builds require PyTorch CUDA 12.4")
+    if torch.version.cuda is not None:
+        parser.error("CPU builds require CPU-only PyTorch")
     models = ensure_models(ROOT / "models", download=True)
 
     work = args.work.resolve() / args.variant
@@ -114,7 +111,7 @@ def main():
     collect_notices(bundle / "third_party_licenses")
     version = runpy.run_path(str(ROOT / "core" / "version.py"))["APP_VERSION"]
     subprocess.run([
-        str(args.iscc.resolve()), f"/DVariant={args.variant}", f"/DAppVersion={version}",
+        str(args.iscc.resolve()), f"/DAppVersion={version}",
         f"/DBundleDir={bundle}", f"/DOutputDir={args.output.resolve()}",
         str(ROOT / "packaging" / "windows-installer.iss"),
     ], check=True, cwd=ROOT)

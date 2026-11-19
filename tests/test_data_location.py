@@ -5,10 +5,11 @@ import sys
 import tempfile
 import unittest
 from contextlib import closing
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from core import data_location, database
+from core import data_location, database, license_client
 
 
 class DataLocationTests(unittest.TestCase):
@@ -33,6 +34,30 @@ class DataLocationTests(unittest.TestCase):
         data_location.save_data_directory(self.root)
         self.assertEqual(json.loads(self.config.read_text(encoding="utf-8")),
                          {"data_directory": str(self.root), "download_url": "https://example.org/downloads"})
+
+    def test_license_configuration_is_persistent_and_preserves_other_configuration(self):
+        self.assertFalse(license_client.is_licensed())
+        self.config.write_text(json.dumps({"download_url": "https://example.org/downloads"}), encoding="utf-8")
+        data_location.save_config_values({
+            "license_key": "AAAA-BBBB-CCCC-DDDD",
+            "license_machine_id": "d4c393eb-67cd-426f-97fb-4c2641052be8",
+            "license_last_validated": datetime.now(timezone.utc).isoformat(),
+            "license_expires_at": None,
+            "license_permanent": True,
+        })
+        self.assertTrue(license_client.is_licensed())
+        self.assertEqual(data_location.load_data_directory(), data_location.DEFAULT_DATA_DIR)
+        data_location.save_data_directory(self.root)
+        self.assertTrue(license_client.is_licensed())
+        self.assertEqual(data_location.load_config()["download_url"], "https://example.org/downloads")
+
+    def test_legacy_mock_key_does_not_unlock_indexing(self):
+        self.config.write_text(
+            json.dumps({"mock_license_key": "PHOTO-SEARCH-MOCK-UNLOCK"}),
+            encoding="utf-8",
+        )
+        self.assertFalse(license_client.is_licensed())
+        self.assertEqual(data_location.load_data_directory(), data_location.DEFAULT_DATA_DIR)
 
     def test_installed_storage_uses_local_app_data(self):
         with patch.object(sys, "frozen", True, create=True), \

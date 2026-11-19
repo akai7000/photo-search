@@ -1,6 +1,4 @@
-#ifndef Variant
-  #error Variant must be CPU or GPU
-#endif
+#define Variant "CPU"
 #ifndef AppVersion
   #error AppVersion is required
 #endif

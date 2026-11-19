@@ -5,6 +5,7 @@ Photo Search is a Windows desktop application for indexing and searching a perso
 ## Features
 
 - Add photo folders and index new or changed images, with progress and cancellation.
+- The free version indexes up to 1,000 photos per index; existing indexed photos remain searchable at the limit.
 - Search using a visual description, saved people's names, capture dates, or a combination.
 - Group detected faces, name whole groups or selected faces, and merge matching names.
 - Review paginated face groups, preview the original photo and its folder, and delete face detections without deleting photos.
@@ -53,37 +54,37 @@ When run from source, the application stores its SQLite index, settings, and gen
 
 ## Windows installers
 
-Choose the **CPU** installer for any supported PC, or the **GPU** installer for an NVIDIA GPU with a compatible driver. Each installer is a single executable for 64-bit Windows 10 version 1809 or later; Python is not required on the target PC. The GPU build uses CUDA 12.4 PyTorch for OpenCLIP; YuNet and SFace run on CPU in both builds. If the driver or GPU is incompatible, OpenCLIP may fall back to the CPU. Microsoft Edge WebView2 Runtime is required for the native window.
+The CPU installer supports 64-bit Windows 10 version 1809 or later; Python is not required on the target PC. OpenCLIP, YuNet and SFace run on the CPU. Microsoft Edge WebView2 Runtime is required for the native window.
 
 - [Download the CPU installer (v0.4)](https://pub-5c62851ff87d40acaeee8eb31d082ac7.r2.dev/v0.4/PhotoSearch-0.4-CPU-Setup.exe)
-- [Download the NVIDIA GPU installer (v0.4)](https://pub-5c62851ff87d40acaeee8eb31d082ac7.r2.dev/v0.4/PhotoSearch-0.4-GPU-Setup.exe)
 
-**The linked v0.4 installers predate the YuNet/SFace change and still use InsightFace's non-commercial buffalo_l weights.** Build and publish new installers before distributing the replacement.
+**The linked v0.4 installer predates the YuNet/SFace change and still uses InsightFace's non-commercial buffalo_l weights.** Build and publish a new installer before distributing the replacement.
 
 New builds bundle the YuNet and SFace model weights and their license texts; they do not bundle a photo index, thumbnails, or OpenCLIP weights. OpenCLIP still downloads its model into the Hugging Face cache on first use. YuNet is MIT licensed and SFace is Apache 2.0 licensed; see `third_party_licenses` in the installed application.
 
 When opening an older index, the app discards incompatible face detections and associations with names, marks photos and folders for re-indexing, and retains the photos, OpenCLIP embeddings, and folder settings. Select **Index Folders** to regenerate faces; review and assign names again. Original photos are not modified. Back up the data directory first if you need to preserve the old face assignments.
 
-The installed app stores its data-directory selection and diagnostic log under `%LOCALAPPDATA%\Photo Search`. The log can contain local paths; review it before sharing. Uninstalling the application does not remove this directory, the model caches, or original photos. An existing source-run index is not automatically moved: select its data directory in Settings if you want to use it. Close one edition before opening the other because they share the same data directory. The installers are unsigned, so Windows may display a publisher warning.
+The installed app stores its data-directory selection and diagnostic log under `%LOCALAPPDATA%\Photo Search`. The log can contain local paths; review it before sharing. Uninstalling the application does not remove this directory, the model caches, or original photos. An existing source-run index is not automatically moved: select its data directory in Settings if you want to use it. Close any other running Photo Search edition before opening the app because they share the same data directory. The installer is unsigned, so Windows may display a publisher warning.
 
 ## Running from source
 
-Source execution requires Windows, Python 3.10 or later, and the dependencies in `requirements.txt`. For GPU acceleration, use a compatible NVIDIA driver, PyTorch, CUDA and cuDNN setup.
+Source execution requires Windows, Python 3.10 or later, and the dependencies in `requirements.txt`.
 
 From the project directory in PowerShell:
 
 ```powershell
 python -m venv venv
+.\venv\Scripts\python.exe -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 .\venv\Scripts\python.exe -m pip install -r requirements.txt
 .\venv\Scripts\python.exe main.py
 ```
 
-For GPU acceleration, install a PyTorch build compatible with your CUDA setup if the default installation does not provide one. Model loading can take time on the first startup.
+Model loading can take time on the first startup.
 The first face indexing run downloads the pinned YuNet and SFace models into `models/` and verifies their SHA-256 hashes. Source runs need internet access for that initial download.
 
 ## Building Windows installers
 
-Use 64-bit Python 3.13 and Inno Setup 7. Build each variant in a separate virtual environment. For example, from PowerShell in the project directory, create the CPU environment:
+Use 64-bit Python 3.13 and Inno Setup 7. From PowerShell in the project directory, create the CPU environment:
 
 ```powershell
 py -3.13 -m venv .venv-cpu
@@ -92,21 +93,12 @@ py -3.13 -m venv .venv-cpu
 .\.venv-cpu\Scripts\python.exe packaging\build_windows.py CPU --iscc "C:\path\to\ISCC.exe"
 ```
 
-For the GPU environment, replace the CPU PyTorch installation with the CUDA 12.4 build:
-
-```powershell
-py -3.13 -m venv .venv-gpu
-.\.venv-gpu\Scripts\python.exe -m pip install torch==2.6.0+cu124 torchvision==0.21.0+cu124 --index-url https://download.pytorch.org/whl/cu124
-.\.venv-gpu\Scripts\python.exe -m pip install -r packaging\requirements-windows.txt
-.\.venv-gpu\Scripts\python.exe packaging\build_windows.py GPU --iscc "C:\path\to\ISCC.exe"
-```
-
-The build script downloads and verifies the pinned face models if needed, bundles only those two model files, rejects bundled databases and other model weights, includes third-party notices, and writes installers to `dist\installers`. Build artifacts can be several gigabytes; allow ample free disk space. Code signing and publication are separate steps.
+The build script requires CPU-only PyTorch, downloads and verifies the pinned face models if needed, bundles only those two model files, rejects bundled databases and other model weights, includes third-party notices, and writes installers to `dist\installers`. Code signing and publication are separate steps.
 
 Windows builds use the Picture Search logo as the application, shortcut, taskbar,
 and installer icon. Rebuild and reinstall to update an existing installation.
 
-On startup, Photo Search checks the official downloads page for newer R2
+On startup, Photo Search checks the official downloads page for newer CPU R2
 installers. If one is available, a link appears in the header; connection
 failures do not display a message. The link opens
 `https://www.snowfoxninja.com/#downloads` by default. To change its destination,
@@ -131,9 +123,31 @@ The **Indexed on** date is displayed in local time and changes only when a scan 
 Removing a searchable folder requires confirmation and removes its indexed photos, faces and generated thumbnails. Photos covered by another searchable folder remain indexed. Original files and saved people are not deleted.
 By default, **Settings > Indexing > Skip Previously Indexed Folders** skips completed folders without checking for new or changed files. Turn it off to rescan those folders and detect changes or regenerate missing thumbnails. Interrupted or failed folders are scanned again. When selected folders overlap, a skipped folder is also excluded from its selected parent.
 
+The free-version photo limit applies to the total number of photos in the active index, across
+all folders. When the limit prevents new photos from being added, the app reports
+it and leaves affected folders incomplete for a later scan. Previously indexed
+photos remain available and can be updated, even if an existing index exceeds
+the limit. Removing indexed photos frees space; original files are not deleted.
+Developers can change `PHOTO_INDEX_LIMIT` in `core/scanner.py` before building.
+Paid licenses are validated by the Photo Search licensing service at
+`https://licensing.snowfoxninja.com`. Open **Settings > License**, enter a
+license key, and select **Activate**. The app sends the key and a
+persistent random machine ID to the validation endpoint; it does not send
+photos or the photo index. A successful validation permanently unlocks that
+device, even when it is offline. The app does not revalidate the activation, so
+server-side revocation, deactivation, or later expiry will not relock an already
+activated device. A fresh installation or another device without a copied
+activation config must validate separately. Since the key and permanent
+activation are stored in the local app configuration (the key is plaintext),
+copying that config can copy the unlock too. Server activation limits and
+revocation cannot prevent that or lock out an already activated copy. This
+local state is not tamper-proof, so the client-side photo limit is not a
+security boundary against a determined user. Resetting the photo index does
+not remove the license configuration.
+
 ## Face pipeline benchmark
 
-Run the standalone benchmark from the project directory with an existing CPU or GPU environment:
+Run the standalone benchmark from the project directory with an existing CPU environment:
 
 ```powershell
 .\venv-cpu\Scripts\python.exe tools\benchmark_faces.py --index data\photo_search.db --limit 30 --repeat 2 --warmup 2 --output face-benchmark-cpu.json
@@ -163,11 +177,10 @@ For YuNet + SFace, pass `--score-threshold 0.7` to compare a lower detection thr
 This optional historical benchmark requires separately installing InsightFace and ONNX Runtime in a separate environment; neither is needed by the app. It uses YuNet but computes embeddings with AuraFace. Download only [`glintr100.onnx` from AuraFace-v1](https://huggingface.co/fal/AuraFace-v1/blob/94ee6ceb788a98a88807db884ae1f00d7e070d23/glintr100.onnx); the benchmarked file's SHA-256 is `a7933ea5330113b01c9b60351d8f4c33003f145d8470ac5f0e52ee2effe25c60`. Review the model's provenance and commercial-use terms separately before distributing it.
 
 ```powershell
-.\venv-gpu\Scripts\python.exe tools\benchmark_auraface.py --index data\photo_search.db --yunet C:\path\to\face_detection_yunet_2026may.onnx --auraface C:\path\to\glintr100.onnx --provider CUDAExecutionProvider --limit 30 --repeat 2 --warmup 2 --output auraface-gpu.json
 .\venv-cpu\Scripts\python.exe tools\benchmark_auraface.py --index data\photo_search.db --yunet C:\path\to\face_detection_yunet_2026may.onnx --auraface C:\path\to\glintr100.onnx --provider CPUExecutionProvider --limit 30 --repeat 2 --warmup 2 --output auraface-cpu.json
 ```
 
-Add `--max-dimension 640` to benchmark resized detection. YuNet is requested on CPU; `--provider` controls AuraFace recognition only and fails if the requested provider is unavailable or not first in its session. ONNX Runtime may still assign individual operators to CPU. The output records both model hashes and the recognition session providers.
+Add `--max-dimension 640` to benchmark resized detection. YuNet and AuraFace run on CPU; the benchmark fails if the CPU provider is unavailable or not first in its session. The output records both model hashes and the recognition session providers.
 
 ## Tests
 

@@ -12,7 +12,6 @@ from functools import partial
 from pathlib import Path
 
 import cv2
-import torch
 import onnxruntime
 from insightface.app.common import Face
 from insightface.model_zoo import get_model
@@ -39,6 +38,8 @@ def detect_faces(path, detector, recognizer, max_dimension):
 
 
 def benchmark(paths, detector_model, recognizer_model, repeat, warmup, max_dimension, provider):
+    if provider != "CPUExecutionProvider":
+        raise ValueError(f"Only the CPU execution provider is supported: {provider}")
     image_hashes, dataset_hash = fingerprint_images(paths)
     model_hashes = {path.name: sha256_file(path) for path in (detector_model, recognizer_model)}
     if provider not in onnxruntime.get_available_providers():
@@ -50,10 +51,7 @@ def benchmark(paths, detector_model, recognizer_model, repeat, warmup, max_dimen
         str(detector_model), "", (320, 320), 0.8, 0.3, 5000,
         cv2.dnn.DNN_BACKEND_OPENCV, cv2.dnn.DNN_TARGET_CPU,
     )
-    providers = [provider]
-    if provider != "CPUExecutionProvider":
-        providers.append("CPUExecutionProvider")
-    recognizer = get_model(str(recognizer_model), providers=providers)
+    recognizer = get_model(str(recognizer_model), providers=[provider])
     if detector is None or recognizer is None or recognizer.taskname != "recognition":
         raise RuntimeError("Could not load YuNet and the AuraFace recognition model")
     recognizer.prepare(ctx_id=0)
@@ -76,13 +74,10 @@ def benchmark(paths, detector_model, recognizer_model, repeat, warmup, max_dimen
             "opencv": cv2.__version__,
             "opencv_requested_backend": "DNN_BACKEND_OPENCV",
             "opencv_requested_target": "DNN_TARGET_CPU",
-            "opencv_cuda_devices": cv2.cuda.getCudaEnabledDeviceCount(),
             "opencv_opencl_enabled": cv2.ocl.useOpenCL(),
             "opencv_threads": cv2.getNumThreads(),
             "insightface": importlib.metadata.version("insightface"),
             "onnxruntime": onnxruntime.__version__,
-            "torch": torch.__version__,
-            "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
             "available_providers": onnxruntime.get_available_providers(),
             "recognition_session_providers": actual_providers,
         },
@@ -111,7 +106,7 @@ def main(argv=None):
     source.add_argument("--directory", type=Path)
     parser.add_argument("--yunet", type=Path, required=True, help="YuNet ONNX model")
     parser.add_argument("--auraface", type=Path, required=True, help="AuraFace recognition ONNX model")
-    parser.add_argument("--provider", choices=("CPUExecutionProvider", "CUDAExecutionProvider"), required=True)
+    parser.add_argument("--provider", choices=("CPUExecutionProvider",), required=True)
     parser.add_argument("--limit", type=positive_int, default=30)
     parser.add_argument("--repeat", type=positive_int, default=2)
     parser.add_argument("--warmup", type=nonnegative_int, default=2)

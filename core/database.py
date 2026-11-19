@@ -177,12 +177,24 @@ def photo_exists(path: str) -> bool:
     conn.close()
     return exists
 
-def insert_or_update_photo(data: Dict) -> int:
+class PhotoIndexLimitReached(Exception):
+    """A new photo cannot be added because the index is full."""
+
+
+def insert_or_update_photo(data: Dict, *, max_photos: int | None = None) -> int:
     """Insert or update a photo. Returns the photo id."""
     conn = get_connection()
-    cursor = conn.cursor()
+    try:
+        cursor = conn.cursor()
+        if max_photos is not None:
+            if type(max_photos) is not int or max_photos < 0:
+                raise ValueError("Photo index limit must be a non-negative integer")
+            cursor.execute("BEGIN IMMEDIATE")
+            existing = cursor.execute("SELECT id FROM photos WHERE path = ?", (data["path"],)).fetchone()
+            if existing is None and cursor.execute("SELECT COUNT(*) FROM photos").fetchone()[0] >= max_photos:
+                raise PhotoIndexLimitReached(f"Photo index limit of {max_photos:,} reached")
 
-    cursor.execute("""
+        cursor.execute("""
         INSERT INTO photos (
             path, file_hash, file_size, modified_time,
             date_taken, width, height, thumbnail_path, indexed_at, clip_embedding
@@ -197,26 +209,25 @@ def insert_or_update_photo(data: Dict) -> int:
             thumbnail_path = excluded.thumbnail_path,
             indexed_at = excluded.indexed_at,
             clip_embedding = excluded.clip_embedding
-    """, (
-        data["path"],
-        data.get("file_hash"),
-        data.get("file_size"),
-        data.get("modified_time"),
-        data.get("date_taken"),
-        data.get("width"),
-        data.get("height"),
-        data.get("thumbnail_path"),
-        datetime.utcnow().isoformat(),
-        data.get("clip_embedding"),
-    ))
+        """, (
+            data["path"],
+            data.get("file_hash"),
+            data.get("file_size"),
+            data.get("modified_time"),
+            data.get("date_taken"),
+            data.get("width"),
+            data.get("height"),
+            data.get("thumbnail_path"),
+            datetime.utcnow().isoformat(),
+            data.get("clip_embedding"),
+        ))
 
-    # Get the id
-    cursor.execute("SELECT id FROM photos WHERE path = ?", (data["path"],))
-    photo_id = cursor.fetchone()["id"]
-
-    conn.commit()
-    conn.close()
-    return photo_id
+        cursor.execute("SELECT id FROM photos WHERE path = ?", (data["path"],))
+        photo_id = cursor.fetchone()["id"]
+        conn.commit()
+        return photo_id
+    finally:
+        conn.close()
 
 
 def delete_faces_for_photo(photo_id: int) -> None:

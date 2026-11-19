@@ -3,13 +3,14 @@ import os
 import tempfile
 import unittest
 from contextlib import closing
+from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
-from core import database
+from core import data_location, database, license_client
 
 
 def load_scanner():
@@ -30,6 +31,9 @@ class ThumbnailTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.root = Path(self.temp_dir.name)
+        config_patch = patch.object(data_location, "CONFIG_PATH", self.root / "config.json")
+        config_patch.start()
+        self.addCleanup(config_patch.stop)
         self.photos = self.root / "photos"
         self.photos.mkdir()
         self.scanner = load_scanner()
@@ -71,6 +75,101 @@ class ThumbnailTests(unittest.TestCase):
                 self.assertTrue(all(abs(a - b) < 30 for a, b in zip(pixel, colors[name])),
                                 (pixel, name))
             self.assertNotIn(274, image.getexif())
+
+    def test_limit_at_exactly_one_thousand_preserves_partial_folder(self):
+        folder = str(self.photos)
+        database.add_folder(folder)
+        for name in ("first.png", "second.png"):
+            self.make_photo(self.photos / name)
+        with closing(database.get_connection()) as conn:
+            conn.executemany("INSERT INTO photos (path) VALUES (?)",
+                             [(str(self.root / f"existing-{i}.jpg"),) for i in range(999)])
+            conn.commit()
+        result = self.scanner.scan_folders([folder])
+        self.assertEqual(database.get_photo_count(), 1000)
+        self.assertEqual((result["added"], result["limit_skipped"], result["errors"]), (1, 1, 0))
+        self.assertEqual(result["photo_limit"], 1000)
+        self.assertEqual(self.scanner.get_image_embedding.call_count, 1)
+        self.assertEqual(self.scanner.detect_faces.call_count, 1)
+        self.assertEqual(database.get_folder_status(folder), "Partially indexed (1 of 2)")
+        self.assertFalse(database.get_folder_progress(folder)["scan_completed"])
+
+    def test_invalid_limit_fails_explicitly_before_scanning(self):
+        with patch.object(self.scanner, "PHOTO_INDEX_LIMIT", -1):
+            with self.assertRaisesRegex(ValueError, "non-negative integer"):
+                self.scanner.scan_folders([str(self.photos)])
+
+    def test_limit_allows_existing_photos_to_update_and_resumes_after_removal(self):
+        folder = str(self.photos)
+        database.add_folder(folder)
+        first = self.photos / "first.png"
+        second = self.photos / "second.png"
+        self.make_photo(first)
+        self.make_photo(second)
+        database.insert_or_update_photo({"path": str(first), "modified_time": 0})
+        database.insert_or_update_photo({"path": str(self.root / "elsewhere.jpg"), "modified_time": 0})
+        database.insert_or_update_photo({"path": str(self.root / "elsewhere-2.jpg"), "modified_time": 0})
+        with patch.object(self.scanner, "PHOTO_INDEX_LIMIT", 2):
+            result = self.scanner.scan_folders([folder], skip_indexed_folders=True)
+            self.assertEqual((result["updated"], result["limit_skipped"]), (1, 1))
+            self.assertEqual(database.get_photo_count(), 3)
+            with closing(database.get_connection()) as conn:
+                conn.execute("DELETE FROM photos WHERE path IN (?, ?)",
+                             (str(self.root / "elsewhere.jpg"), str(self.root / "elsewhere-2.jpg")))
+                conn.commit()
+            result = self.scanner.scan_folders([folder], skip_indexed_folders=True)
+            self.assertEqual((result["added"], result["limit_skipped"]), (1, 0))
+            self.assertEqual(result["folders_skipped"], 0)
+            self.assertEqual(database.get_photo_count(), 2)
+            self.assertTrue(database.get_folder_progress(folder)["scan_completed"])
+
+    def test_limit_is_enforced_atomically_for_concurrent_inserts(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        barrier = Barrier(2)
+        def insert(name):
+            barrier.wait(timeout=5)
+            try:
+                database.insert_or_update_photo({"path": name}, max_photos=1)
+                return "added"
+            except database.PhotoIndexLimitReached:
+                return "limited"
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(insert, ("first.jpg", "second.jpg")))
+        self.assertCountEqual(results, ["added", "limited"])
+        self.assertEqual(database.get_photo_count(), 1)
+
+    def test_server_license_cache_resumes_partial_index_without_losing_existing_photos(self):
+        folder = str(self.photos)
+        database.add_folder(folder)
+        self.make_photo(self.photos / "first.png")
+        self.make_photo(self.photos / "second.png")
+        with patch.object(self.scanner, "PHOTO_INDEX_LIMIT", 1):
+            limited = self.scanner.scan_folders([folder])
+            self.assertEqual((limited["added"], limited["limit_skipped"]), (1, 1))
+            with closing(database.get_connection()) as conn:
+                original_id = conn.execute("SELECT id FROM photos").fetchone()[0]
+                person_id = conn.execute("INSERT INTO people (name) VALUES ('Test Person')").lastrowid
+                conn.execute("INSERT INTO faces (photo_id, person_id, embedding) VALUES (?, ?, ?)",
+                             (original_id, person_id, b"face"))
+                conn.commit()
+            data_location.save_config_values({
+                "license_key": "AAAA-BBBB-CCCC-DDDD",
+                "license_machine_id": "d4c393eb-67cd-426f-97fb-4c2641052be8",
+                "license_last_validated": datetime.now(timezone.utc).isoformat(),
+                "license_expires_at": None,
+            })
+            unlocked = self.scanner.scan_folders([folder], skip_indexed_folders=True)
+        self.assertEqual((unlocked["added"], unlocked["limit_skipped"]), (1, 0))
+        self.assertIsNone(unlocked["photo_limit"])
+        self.assertEqual(database.get_photo_count(), 2)
+        with closing(database.get_connection()) as conn:
+            self.assertIsNotNone(conn.execute("SELECT id FROM photos WHERE id = ?", (original_id,)).fetchone())
+            self.assertEqual(conn.execute(
+                "SELECT people.name FROM faces JOIN people ON people.id = faces.person_id WHERE faces.photo_id = ?",
+                (original_id,),
+            ).fetchone()[0], "Test Person")
+        self.assertTrue(database.get_folder_progress(folder)["scan_completed"])
 
     def test_all_exif_orientations(self):
         orientations = {
